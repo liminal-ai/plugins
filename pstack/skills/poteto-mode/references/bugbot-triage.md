@@ -12,6 +12,10 @@ Classify each Bugbot thread before acting:
 
 When in doubt, ask. Skipping a noisy code-quality comment is cheap; skipping a real data or security bug is not.
 
+## Codex reviews
+
+Codex's review bot reviews PRs alongside Bugbot, as a trial of which finds real bugs. Confirm its account name on the first PR it reviews. Triage its threads with the same rubric. Count its passes separately from Bugbot's: `watch-pr` marks only Bugbot threads (`isBugBot`), so count Codex passes from the thread author and the PR's review history, and never add them to Bugbot's pass count. Hold the third-pass dismiss lean for Codex. Note which bot raised each real bug, so the two can be compared after a few PRs.
+
 ## Learned pattern format
 
 Add future patterns in this shape:
