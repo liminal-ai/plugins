@@ -100,7 +100,7 @@ Close calls:
 
 Not in pstack:
 
-- `/loop` and `/create-skill` are Cursor built-ins.
+- `/loop` is a Claude Code built-in. Other leads wake through T3's `schedule_task`. `/create-skill` is Cursor's built-in, not part of pstack.
 - pstack has no `/orchestrate` skill. Orchestrate is a `/poteto-mode` playbook. If the slash menu shows `/orchestrate`, another plugin provides it.
 
 ## Playbooks and principles
