@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
 
-Every spawn is a `delegate_task` child (`mode: "async"`) in a read-only role: its prompt says no file writes and no external mutation. Explorers use the `how explorer` line in the `pstack-models.mdc` rule (default `grok-4.7-xhigh-fast`), and every explainer uses the `how explainer` line (default `claude-opus-5-5-xhigh`). Set `model` to that line's value, or to the default if the rule or the line is missing. Leave `model` unset when the value is `auto` or `inherit-parent`. If the Task tool rejects a slug, use the default and say so. If it rejects the default, use the closest valid slug of the same family from its error message.
+Every spawn is a `delegate_task` child (`mode: "async"`) in a read-only role: its prompt says no file writes and no external mutation. Explorers use the `how explorer` line in the role file (`~/lim-v2/AGENTS.md` or `~/lim-v2/CLAUDE.md`) (default `cursor/grok-4.7 effort=xhigh fastMode=true`), and every explainer uses the `how explainer` line (default `claudeAgent/claude-opus-5-5 effort=xhigh`). Set `delegate_task`'s `target` to that line's entry, or to the default if the file or the line is missing. Omit `target` when the value is `auto` or `inherit-parent`. If `delegate_task` rejects an entry, use the default and say so. If it rejects the default, use the closest model of the same family that `orchestrator_capabilities` lists.
 
 Each child's final message is its findings or explanation.
 

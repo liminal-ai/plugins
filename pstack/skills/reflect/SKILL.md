@@ -18,19 +18,19 @@ Before fanning out, find this conversation's transcript. It is this T3 thread, w
 
 One message, three `delegate_task` calls (`mode: "async"`), each in a read-only role (no file writes, no external mutation, as its template says). Reviewers keep their MCP tools to look up the tickets, chat threads, and observability traces the transcript references.
 
-Each reviewer and the synthesizer name a role line in the `pstack-models.mdc` rule and a default. Set `model` to that line's value, or to the default if the rule or the line is missing. Leave `model` unset when the value is `auto` or `inherit-parent`. If the Task tool rejects a slug, use the default and say so. If it rejects the default, use the closest valid slug of the same family from its error message.
+Each reviewer and the synthesizer name a role line in the role file (`~/lim-v2/AGENTS.md` or `~/lim-v2/CLAUDE.md`) and a default. Set `delegate_task`'s `target` to that line's entry, or to the default if the file or the line is missing. Omit `target` when the value is `auto` or `inherit-parent`. If `delegate_task` rejects an entry, use the default and say so. If it rejects the default, use the closest model of the same family that `orchestrator_capabilities` lists.
 
-| Lens | Role line | Default `model` | Prompt template |
+| Lens | Role line | Default `target` | Prompt template |
 |---|---|---|---|
-| Judgment | `reflect judgment, divergent, synthesizer` | `claude-opus-5-5-xhigh` | `references/judgment-reviewer.md` |
-| Tooling | `reflect tooling` | `grok-4.7-xhigh-fast` | `references/tooling-reviewer.md` |
-| Divergent | `reflect judgment, divergent, synthesizer` | `claude-opus-5-5-xhigh` | `references/divergent-reviewer.md` |
+| Judgment | `reflect judgment, divergent, synthesizer` | `claudeAgent/claude-opus-5-5 effort=xhigh` | `references/judgment-reviewer.md` |
+| Tooling | `reflect tooling` | `cursor/grok-4.7 effort=xhigh fastMode=true` | `references/tooling-reviewer.md` |
+| Divergent | `reflect judgment, divergent, synthesizer` | `claudeAgent/claude-opus-5-5 effort=xhigh` | `references/divergent-reviewer.md` |
 
 Pass each template verbatim, substituting the thread ID or digest where marked. Each reviewer's findings are its final message, which `task_status` returns.
 
 ## 3. Synthesize
 
-One `delegate_task` call, `model` from the `reflect judgment, divergent, synthesizer` line (default `claude-opus-5-5-xhigh`), in a read-only role like the reviewers. It keeps its MCP tools to spot-verify citations. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
+One `delegate_task` call, `target` from the `reflect judgment, divergent, synthesizer` line (default `claudeAgent/claude-opus-5-5 effort=xhigh`), in a read-only role like the reviewers. It keeps its MCP tools to spot-verify citations. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
 
 ## 4. Structural enforcement check
 
