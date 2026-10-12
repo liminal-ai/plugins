@@ -13,12 +13,11 @@ Use local browser automation to verify UI behavior with evidence. First reuse th
 - Verifying visual or accessibility changes with screenshots and snapshots.
 - Checking local web, IDE, or Electron behavior before shipping.
 - Capturing console logs, network logs, CPU profiles, traces, or heap snapshots.
-- Creating before/after evidence for `verify-this`.
 
 ## Setup Pattern
 
 1. Start the app locally using the repo's documented dev command.
-2. Discover existing local harnesses: Playwright tests, Cypress specs, Storybook, browser scripts, Electron launch scripts, or snapshot tools.
+2. Discover existing local harnesses: Playwright tests, Cypress specs, Storybook, browser scripts, Electron launch scripts, or snapshot tools. In T3, its browser preview tools (`preview_open`, `preview_navigate`, `preview_snapshot`, `preview_click`, `preview_type`, `preview_evaluate`, and the rest of `preview_*`) are available browser tooling too.
 3. For a web app, connect to the local URL with the existing browser tooling.
 4. For Electron/Chromium, enable a remote debugging port when supported.
 5. Select the correct page by stable app markers, not by tab order alone.
