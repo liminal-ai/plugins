@@ -40,7 +40,7 @@ Move any Accepted item that a lint rule, script, metadata flag, or runtime check
 
 Present the synthesizer's full Accepted / Rejected / Backlog output and wait for explicit approval before applying any Accepted edit. The user picks the subset and may redirect routings. Skill changes affect every future agent in the org. Do not auto-apply.
 
-File each Backlog item to your team's devex or backlog tracker without waiting. Only the Accepted list waits for approval.
+Append each Backlog item to a local backlog file without waiting (default `~/lim-v2/reflect-backlog.md`), and tell the user the file's path. Nothing files tickets. Only the Accepted list waits for approval.
 
 Follow each approved row's Routing exactly:
 
@@ -57,5 +57,5 @@ Short list, no preamble:
 
 - Edits applied: `<skill path>`. What changed, one line each.
 - New skills created: `<skill path>`. One line each (rare).
-- Backlog filed to the devex tracker: `<issue title>` (`<tags>`). One line each.
+- Backlog written to `<backlog file>`: `<item title>` (`<tags>`). One line each.
 - Dropped: one line per rejected finding + reason from the synthesizer.
