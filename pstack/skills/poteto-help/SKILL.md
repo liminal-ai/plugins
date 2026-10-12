@@ -50,7 +50,7 @@ pstack is built for Cursor. Its skills use the Agent Skills format, so other too
 
 Start each task thread with `/poteto-mode`. It attaches the skill to that message, and it fades as the chat moves on.
 
-Mid-chat, "new task" makes the mode match a fresh playbook. `/poteto-mode` already uses `poteto-agent` for the subagents its playbook steps spawn. To get the same style from a subagent of your own, spawn it with `subagent_type: "poteto-agent"`.
+Mid-chat, "new task" makes the mode match a fresh playbook. `/poteto-mode` already uses `poteto-agent` for the subagents its playbook steps spawn. To get the same style from a subagent of your own, start its brief by telling it to read poteto-mode's `SKILL.md` in full, as `agents/poteto-agent.md` says.
 
 ## Pick a skill
 

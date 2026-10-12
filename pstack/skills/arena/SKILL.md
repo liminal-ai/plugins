@@ -19,13 +19,13 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 ## Phase B: Fan out
 
-Spawn all N subagents in one message with `run_in_background: true`, each with the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected.
+Spawn all N as `delegate_task` children in one message with `mode: "async"`, each with the task, the path to the shared grounding, its own output path (its own worktree per poteto-mode's Subagents section when it writes code), and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected. Each candidate's final message is its rationale and where its artifact is: the output path, or the commit SHA for code.
 
 If a candidate produces no output, proceed with N-1 and note the dropout.
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, choose one model from the `arena cross-judge pool` line in `~/.cursor/rules/pstack-models.mdc`. If the rule or that line is missing, choose from `claude-opus-5-5-xhigh` and `grok-4.7-xhigh-fast`. Prefer a different model family from the parent's. Spawn one judge subagent on that model in a read-only role: its prompt says no file writes and no external mutation. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with your reading in Phase D. Don't spawn it while candidates are still writing.
+After all Phase B candidates complete, choose one model from the `arena cross-judge pool` line in `~/.cursor/rules/pstack-models.mdc`. If the rule or that line is missing, choose from `claude-opus-5-5-xhigh` and `grok-4.7-xhigh-fast`. Prefer a different model family from the parent's. Spawn one judge `delegate_task` child on that model in a read-only role: its prompt says no file writes and no external mutation. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with your reading in Phase D. Don't spawn it while candidates are still writing.
 
 ## Phase D: Pick a base
 

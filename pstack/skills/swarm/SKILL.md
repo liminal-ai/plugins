@@ -27,11 +27,11 @@ Open a todolist with one entry per phase before launching anything.
 
 ## Phase B: Fan out
 
-Spawn all N workers in one message with `subagent_type: generalPurpose`, `environment: "cloud"`, `run_in_background: true`, and the step 4 model, left unset for `auto` or `inherit-parent`. Use `environment: "local"` only when the worker needs access to something on the user's computer.
+Spawn all N workers in one message as `delegate_task` children (`mode: "async"`) with the step 4 model, left unset for `auto` or `inherit-parent`. Where they run follows the `cloud workers` line in the role file. Run a worker on this machine only when it needs access to something on the user's computer. A worker that builds, drives the app, or checks out a SHA gets its own worktree per poteto-mode's Subagents section.
 
-When a worker must start from a non-default pushed branch, pass `cloud_base_branch`.
+When a worker must start from a non-default pushed branch, its brief names that branch.
 
-Every brief stands alone. Include the goal, scope, exact slice or race arm, how to verify, and what to report. Reports use `PASS`, `ISSUES`, or `BLOCKED` with evidence. A worker that can prove a defect reports `ISSUES` and lists every issue it can prove, not only the first.
+Every brief stands alone. Include the goal, scope, exact slice or race arm, how to verify, and what to report. Reports use `PASS`, `ISSUES`, or `BLOCKED` with evidence, as the worker's final message. A worker that can prove a defect reports `ISSUES` and lists every issue it can prove, not only the first.
 
 If a worker drops out, proceed with N-1 and note it.
 

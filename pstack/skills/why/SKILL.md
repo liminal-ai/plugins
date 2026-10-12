@@ -10,7 +10,7 @@ Investigate the motivation and intent behind code. The companion `how` skill ans
 
 Each spawn below names a role line in the `pstack-models.mdc` rule and a default. Set `model` to that line's value, or to the default if the rule or the line is missing. Leave `model` unset when the value is `auto` or `inherit-parent`. If the Task tool rejects a slug, use the default and say so. If it rejects the default, use the closest valid slug of the same family from its error message.
 
-Every spawn is `generalPurpose` in a read-only role: its prompt says no file writes and no external mutation. It keeps its MCP tools, which the MCP-backed investigators and the synthesizer's citation spot-checks read through.
+Every spawn is a `delegate_task` child (`mode: "async"`) in a read-only role: its prompt says no file writes and no external mutation. It keeps its MCP tools, which the MCP-backed investigators and the synthesizer's citation spot-checks read through. Each child's final message is its findings.
 
 ## Operating Posture
 
