@@ -12,13 +12,7 @@ Invoke when the user says "reflect" or "/reflect". Skip when the conversation is
 
 ## 1. Locate the active transcript
 
-Before fanning out, find this conversation's transcript in the `agent-transcripts/` directory the system prompt names. Do not glob across `~/.cursor/projects/*/`. That crosses workspace boundaries and reads private chats from unrelated projects.
-
-```bash
-ls -t <agent-transcripts>/*.jsonl <agent-transcripts>/*/*.jsonl <agent-transcripts>/*/subagents/*.jsonl 2>/dev/null | head -10
-```
-
-That covers the legacy flat (`<id>.jsonl`), current nested (`<id>/<id>.jsonl`), and subagent (`<parent>/subagents/<child>.jsonl`) layouts. For each candidate, read the first JSONL line. Take the file whose `message.content[0].text` contains the conversation's opening user prompt. If none matches, pass a tight digest of the session instead.
+Before fanning out, find this conversation's transcript. It is this T3 thread, whose ID `t3_thread_list` returns as `currentThreadId`. Reviewers read it with `t3_thread_read` with `view: "activity"`, following `nextPosition` and, for long items, `nextTextOffset` to the end. Do not read threads outside this project. `t3_thread_read` accepts any thread ID, so that scope is yours to keep. If the thread cannot be read, pass a tight digest of the session instead.
 
 ## 2. Spawn three reviewers in parallel
 
@@ -32,7 +26,7 @@ Each reviewer and the synthesizer name a role line in the `pstack-models.mdc` ru
 | Tooling | `reflect tooling` | `grok-4.7-xhigh-fast` | `references/tooling-reviewer.md` |
 | Divergent | `reflect judgment, divergent, synthesizer` | `claude-opus-5-5-xhigh` | `references/divergent-reviewer.md` |
 
-Pass each template verbatim, substituting the transcript path or digest where marked. Reviewers return findings in the `Task` response body.
+Pass each template verbatim, substituting the thread ID or digest where marked. Reviewers return findings in the `Task` response body.
 
 ## 3. Synthesize
 
