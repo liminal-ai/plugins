@@ -34,7 +34,7 @@ When a role line is missing and it matters, ask whether the user wants to pick t
 
 ## Get set up
 
-1. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` except `make-bot-ui` and `setup-pstack` into the repo's `.agents/skills`, and `pstack/agents` into `.agents/agents`. Add a `.claude/skills -> ../.agents/skills` symlink so Claude sees the skills.
+1. Install per user, as a Cursor plugin would be. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` except `make-bot-ui` and `setup-pstack` into `~/.agents/skills/<name>`, symlink each as `~/.claude/skills/<name> -> ../../.agents/skills/<name>`, and copy `pstack/agents` into `~/.agents/agents`. Re-run the same copy after each fork update. A repo's own `.agents/skills` holds only its generated `verify-<app>` skills.
 2. Set each role's model in the role file (the pstack roles section of `~/lim-v2/AGENTS.md`, mirrored in `~/lim-v2/CLAUDE.md`). Each entry is a T3 `delegate_task` target, checked against `orchestrator_capabilities`. The files load into new threads.
 3. Start a real task with `/poteto-mode`, a goal, and a check that can pass or fail.
 
