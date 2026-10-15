@@ -28,18 +28,18 @@ Check the state that changes the answer, and mention it only when it does:
 
 When a role line is missing and it matters, ask whether the user wants to pick that role's model now. It matters when the user is new, the question is about setup or cost, or the answer depends on which models run. Ask at most once per chat. If the need is also unclear, ask both questions together. Offer two choices:
 
-- Now: write the line in both files with them, check each entry against `orchestrator_capabilities`, and answer their question too.
-- Later: answer their question, and add one line saying the role keeps its default model until its line is set.
+- Now: give them `/setup-pstack` to type, and answer their question too.
+- Later: answer their question, and add one line saying the role keeps its default model until they run `/setup-pstack`.
 
 ## Get set up
 
-1. Install per user, as a Cursor plugin would be. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` except `make-bot-ui` and `setup-pstack` into `~/.agents/skills/<name>`, symlink each as `~/.claude/skills/<name> -> ../../.agents/skills/<name>`, and copy `pstack/agents` into `~/.agents/agents`. Re-run the same copy after each fork update. A repo's own `.agents/skills` holds only its generated `verify-<app>` skills.
-2. Set each role's model in the role file (the pstack roles section of `~/lim-v2/AGENTS.md`, mirrored in `~/lim-v2/CLAUDE.md`). Each entry is a T3 `delegate_task` target, checked against `orchestrator_capabilities`. The files load into new threads.
+1. Install per user, as a Cursor plugin would be. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` into `~/.agents/skills/<name>` (`rsync -a --delete`, so files the fork dropped go too), symlink each as `~/.claude/skills/<name> -> ../../.agents/skills/<name>`, and copy `pstack/agents` into `~/.agents/agents`. Re-run the same copy after each fork update. A repo's own `.agents/skills` holds only its generated `verify-<app>` skills.
+2. Run [`/setup-pstack`](../setup-pstack/SKILL.md) from a v2 thread. It asks for a reasoning budget, maps a model to each role from `orchestrator_capabilities`, and writes the pstack roles section of the role file (`~/lim-v2/AGENTS.md`, mirrored in `~/lim-v2/CLAUDE.md`). The files load into new threads.
 3. Start a real task with `/poteto-mode`, a goal, and a check that can pass or fail.
 
-Installing changes nothing until the user invokes a skill. Only `deslop`, `control-ui`, and `control-cli` load from the user's words. The [README](../../README.md) and [guide page 1](../../docs/guide/01-setup.md) have the details. Offer to word their first prompt with them, per [`references/prompting.md`](references/prompting.md).
+Installing changes nothing until the user invokes a skill. Only `/setup-pstack`, `deslop`, `control-ui`, and `control-cli` load from the user's words. The [README](../../README.md) and [guide page 1](../../docs/guide/01-setup.md) have the details. Offer to word their first prompt with them, per [`references/prompting.md`](references/prompting.md).
 
-If cost is the worry, say where the tokens go and how to spend fewer. pstack spends extra tokens on subagents and review panels. Set cheaper models or lower efforts in the role file. A role set to `auto` or `inherit-parent` runs on the chat's model, which saves tokens when the chat runs on Auto or a cheaper model. A shorter panel list runs fewer subagents, one for each entry. Save `/poteto-mode` for work that needs rigor.
+If cost is the worry, say where the tokens go and how to spend fewer. pstack spends extra tokens on subagents and review panels. Rerun `/setup-pstack` and pick a smaller budget or cheaper models. A role set to `auto` or `inherit-parent` runs on the chat's model, which saves tokens when the chat runs on Auto or a cheaper model. A shorter panel list runs fewer subagents, one for each entry. Save `/poteto-mode` for work that needs rigor.
 
 This pstack is ported from Cursor to T3 Code. Its workflow skills, including `/poteto-mode`, `/how`, `/why`, and `/teach`, spawn T3 `delegate_task` children with per-role models from the role file, and long runs wake through Claude Code's `/loop` or T3's `schedule_task`.
 
@@ -81,9 +81,10 @@ The default answer is `/poteto-mode`, which runs most of the others when its ste
 | Keep a decision log during a run, and review it afterward | [`/show-me-your-work`](../show-me-your-work/SKILL.md) |
 | Pick a model for each role and a reasoning budget | The role file in `~/lim-v2/AGENTS.md` and `~/lim-v2/CLAUDE.md` |
 | Turn their own working habits into a personal mode skill | [`/automate-me`](../automate-me/SKILL.md) |
+| Pick a model for each role and a reasoning budget | [`/setup-pstack`](../setup-pstack/SKILL.md) |
 | Turn what a finished task taught into skill edits | [`/reflect`](../reflect/SKILL.md) |
 | Stop agents from repeating the same mistakes in this repo | [`/correct`](../correct/SKILL.md) |
-| Build a page whose buttons wake a Grok Bot over a webhook | `/make-bot-ui`, not available in this port |
+| Build a page whose buttons wake a T3 thread over a webhook | [`/make-bot-ui`](../make-bot-ui/SKILL.md) |
 | Find their way around pstack | `/poteto-help` |
 
 If a skill directory next to this one is missing from the table, read its frontmatter and route by its description. The `principle-*` directories are covered under principles below.
@@ -127,7 +128,7 @@ Principles are one-rule skills that `/poteto-mode` reads and cites in its replie
 | A question got treated as the next step of the last task | Say "new task", or say the turn doesn't need the mode. |
 | A new model choice had no effect | The role file loads into new threads. Start one, and check the line is in both `AGENTS.md` and `CLAUDE.md`. |
 | Runs cost more than expected | See the cost paragraph under Get set up. |
-| A skill didn't load on its own | Only `deslop`, `control-ui`, and `control-cli` load from the user's words. The others load when the user types them or when `/poteto-mode` runs them, and it doesn't run every skill. |
+| A skill didn't load on its own | Only `/setup-pstack`, `deslop`, `control-ui`, and `control-cli` load from the user's words. The others load when the user types them or when `/poteto-mode` runs them, and it doesn't run every skill. |
 | Parallel agents overwrote each other | Give each agent its own worktree, or run them as cloud agents, which each get their own machine. |
 | An overnight run moved but finished nothing | `/loop` needs a check that can pass or fail, not a duration. See [guide page 7](../../docs/guide/07-overnight.md). |
 | The reply claims success from a green build | Ask for the real command, flow, stored value, or profile. That's the prove-it-works principle. |
