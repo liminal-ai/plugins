@@ -1,7 +1,6 @@
 ---
 name: ketchup
-description: "Catch the user up on everything in this chat since their last message, in plain words. Give each action item an executive summary with enough context to make the call. Use for /ketchup."
-disable-model-invocation: true
+description: "Catch the user up on everything in this chat since their last message, in plain words. Give each action item an executive summary with enough context to make the call. Use for /ketchup. Use only when the user or another skill names it."
 ---
 
 # Ketchup

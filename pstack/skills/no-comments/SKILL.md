@@ -1,7 +1,6 @@
 ---
 name: no-comments
-description: "Spawn Comment Sicko, fix accepted findings, and offer encodings for claimed constraints."
-disable-model-invocation: true
+description: "Spawn Comment Sicko, fix accepted findings, and offer encodings for claimed constraints. Use only when the user or another skill names it."
 ---
 
 # No comments
