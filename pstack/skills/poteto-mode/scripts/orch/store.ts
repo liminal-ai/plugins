@@ -169,9 +169,12 @@ export interface ResolveGateParams {
   readonly answer: string;
 }
 
+export type FrontierSource = "gt" | "gh";
+
 export interface SetFrontierParams {
   readonly repo: string;
   readonly prs?: readonly number[];
+  readonly source?: FrontierSource;
 }
 
 export interface AddStandingParams {
@@ -1166,7 +1169,162 @@ function branchSha({
   return sha;
 }
 
-function resolveFrontier(repo: string): readonly FrontierPr[] {
+interface GhPullRequest {
+  readonly number: number;
+  readonly headRefName: string;
+  readonly baseRefName: string;
+  readonly headRefOid: string;
+}
+
+function runInRepo({
+  command,
+  args,
+  repo,
+}: {
+  command: string;
+  args: readonly string[];
+  repo: string;
+}): string {
+  try {
+    return execFileSync(command, args, {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, NO_COLOR: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    throw new UserError(
+      `${command} ${args.join(" ")} failed: ${errorMessage(error)}`
+    );
+  }
+}
+
+function parseGhPullRequests(raw: string): readonly GhPullRequest[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new UserError("gh pr list output is not JSON");
+  }
+  if (!Array.isArray(value)) {
+    throw new UserError("gh pr list output is not a list");
+  }
+  return value.map((item: unknown) => {
+    const row = item as Partial<GhPullRequest> | null;
+    if (
+      row === null ||
+      typeof row !== "object" ||
+      typeof row.number !== "number" ||
+      typeof row.headRefName !== "string" ||
+      typeof row.baseRefName !== "string" ||
+      typeof row.headRefOid !== "string" ||
+      !/^[0-9a-f]{40,64}$/i.test(row.headRefOid)
+    ) {
+      throw new UserError(
+        `gh pr list output has an invalid pull request: ${JSON.stringify(item)}`
+      );
+    }
+    return {
+      number: row.number,
+      headRefName: row.headRefName,
+      baseRefName: row.baseRefName,
+      headRefOid: row.headRefOid,
+    };
+  });
+}
+
+// The open pull requests that form the current branch's stack, bottom to top.
+// A plain pull request to trunk is a one-PR stack.
+function githubFrontier(repo: string): readonly FrontierPr[] {
+  const current = runInRepo({
+    command: "git",
+    args: ["rev-parse", "--abbrev-ref", "HEAD"],
+    repo,
+  }).trim();
+  const trunk = runInRepo({
+    command: "gh",
+    args: ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+    repo,
+  }).trim();
+  const open = parseGhPullRequests(
+    runInRepo({
+      command: "gh",
+      args: [
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,headRefName,baseRefName,headRefOid",
+      ],
+      repo,
+    })
+  );
+  const byHead = new Map<string, GhPullRequest>();
+  for (const pr of open) {
+    if (byHead.has(pr.headRefName)) {
+      throw new UserError(
+        `gh pr list output has two open pull requests for branch ${pr.headRefName}`
+      );
+    }
+    byHead.set(pr.headRefName, pr);
+  }
+  const start = byHead.get(current);
+  if (start === undefined) {
+    throw new UserError(
+      `branch ${current} has no open pull request; check out a branch of the stack`
+    );
+  }
+  const chain: GhPullRequest[] = [start];
+  for (let base = start.baseRefName; base !== trunk; ) {
+    const parent = byHead.get(base);
+    if (parent === undefined) {
+      throw new UserError(
+        `#${chain[0]?.number} is based on ${base}, which has no open pull request; restack it onto ${trunk} first`
+      );
+    }
+    if (chain.includes(parent)) {
+      throw new UserError(`pull request bases form a cycle at #${parent.number}`);
+    }
+    chain.unshift(parent);
+    base = parent.baseRefName;
+  }
+  for (let top = start; ; ) {
+    const children = open.filter((pr) => pr.baseRefName === top.headRefName);
+    if (children.length === 0) {
+      break;
+    }
+    const [child] = children;
+    if (children.length > 1 || child === undefined) {
+      throw new UserError(
+        `#${top.number} has more than one child pull request (${children
+          .map((pr) => `#${pr.number}`)
+          .join(",")}); the frontier needs one linear stack`
+      );
+    }
+    if (chain.includes(child)) {
+      throw new UserError(`pull request bases form a cycle at #${child.number}`);
+    }
+    chain.push(child);
+    top = child;
+  }
+  return chain.map((pr) => ({
+    pr: pr.number,
+    branches: pr.headRefName,
+    sha: pr.headRefOid,
+    state: "OPEN",
+  }));
+}
+
+function resolveFrontier(
+  repo: string,
+  source: FrontierSource
+): readonly FrontierPr[] {
+  if (source === "gh") {
+    return githubFrontier(repo);
+  }
   return graphiteFrontier(repo).map((row) => ({
     ...row,
     sha: branchSha({ branch: row.branches, repo }),
@@ -1176,9 +1334,11 @@ function resolveFrontier(repo: string): readonly FrontierPr[] {
 function validateFrontierPin({
   actual,
   expected,
+  source,
 }: {
   actual: readonly number[];
   expected: readonly number[];
+  source: FrontierSource;
 }): void {
   if (
     actual.length === expected.length &&
@@ -1192,14 +1352,14 @@ function validateFrontierPin({
   const extra = actual.filter((pr) => !expectedSet.has(pr));
   const drift: string[] = [];
   if (missing.length > 0) {
-    drift.push(`missing from gt: ${missing.join(",")}`);
+    drift.push(`missing from ${source}: ${missing.join(",")}`);
   }
   if (extra.length > 0) {
-    drift.push(`extra in gt: ${extra.join(",")}`);
+    drift.push(`extra in ${source}: ${extra.join(",")}`);
   }
   if (missing.length === 0 && extra.length === 0) {
     drift.push(
-      `order differs: expected ${expected.join(",")}; gt ${actual.join(",")}`
+      `order differs: expected ${expected.join(",")}; ${source} ${actual.join(",")}`
     );
   }
   throw new UserError(`frontier pin mismatch: ${drift.join("; ")}`);
@@ -1510,11 +1670,13 @@ export function openStore(
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const prs = resolveFrontier(repo);
+        const source = params.source ?? "gt";
+        const prs = resolveFrontier(repo, source);
         if (pin !== undefined) {
           validateFrontierPin({
             actual: prs.map((row) => row.pr),
             expected: pin,
+            source,
           });
         }
         const value: Frontier = {

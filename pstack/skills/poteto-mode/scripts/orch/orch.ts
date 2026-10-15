@@ -8,6 +8,7 @@ import {
   parseVerdict,
   type Counts,
   type Frontier,
+  type FrontierSource,
   type InboxPointer,
   type OpenGate,
   type StandingLine,
@@ -84,6 +85,7 @@ interface GateResolveOptions {
 interface FrontierSetOptions {
   readonly repo?: string;
   readonly prs?: readonly number[];
+  readonly source?: FrontierSource;
 }
 
 function message(error: unknown): string {
@@ -480,9 +482,13 @@ function createProgram(io: Io): Command {
 
   const frontier = program
     .command("frontier")
-    .description("manage the Graphite stack frontier")
+    .description("manage the stack frontier")
     .action(() => requireSubcommand(program));
-  leaf(frontier, "set", "discover the Graphite stack and set the frontier")
+  leaf(
+    frontier,
+    "set",
+    "discover the current branch's stack and set the frontier"
+  )
     .addOption(
       new Option(
         "--repo <dir>",
@@ -494,6 +500,14 @@ function createProgram(io: Io): Command {
       "optional expected pull request order pin",
       prList
     )
+    .addOption(
+      new Option(
+        "--source <source>",
+        "where the stack comes from: gt (Graphite) or gh (open PRs and their bases)"
+      )
+        .choices(["gt", "gh"])
+        .default(Bun.which("gt") === null ? "gh" : "gt")
+    )
     .action((options: FrontierSetOptions) =>
       runStore(
         program,
@@ -502,6 +516,7 @@ function createProgram(io: Io): Command {
           store.frontier.set({
             repo: frontierRepo(options),
             prs: options.prs,
+            source: options.source,
           }),
         frontierLine
       )

@@ -159,6 +159,57 @@ esac
   }
 }
 
+async function withFakeGh<T>({
+  directory,
+  operation,
+  pullRequests,
+}: {
+  directory: string;
+  operation: () => Promise<T>;
+  pullRequests: unknown;
+}): Promise<T> {
+  const bin = join(directory, "gh-bin");
+  const listPath = join(directory, "gh-pr-list.json");
+  await mkdir(bin);
+  await writeFile(listPath, JSON.stringify(pullRequests));
+  const gh = join(bin, "gh");
+  await writeFile(
+    gh,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$(pwd -P)" != "${realpathSync(join(directory, "repo"))}" ]; then
+  printf 'gh ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
+  exit 2
+fi
+case "$*" in
+  "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
+    printf 'main\\n'
+    ;;
+  "pr list --state open --limit 1000 --json number,headRefName,baseRefName,headRefOid")
+    cat "${listPath}"
+    ;;
+  *)
+    printf 'unexpected gh arguments: %s\\n' "$*" >&2
+    exit 2
+    ;;
+esac
+`
+  );
+  await chmod(gh, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${bin}:${originalPath ?? ""}`;
+  try {
+    return await operation();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  }
+}
+
 function runCli(
   args: readonly string[],
   env: Readonly<Record<string, string | undefined>> = process.env
@@ -482,6 +533,108 @@ describe("Store", () => {
     });
   });
 
+  it("resolves the current branch's stack from open pull requests", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+    const pr = (number: number, head: string, base: string, sha: string) => ({
+      number,
+      headRefName: head,
+      baseRefName: base,
+      headRefOid: sha,
+    });
+
+    await withFakeGh({
+      directory,
+      pullRequests: [
+        pr(30, "other/plain", "main", stack.mergedSha),
+        pr(22, "stack/open", "stack/closed", stack.openSha),
+        pr(20, "stack/merged", "main", stack.mergedSha),
+        pr(21, "stack/closed", "stack/merged", stack.closedSha),
+      ],
+      operation: async () => {
+        expect(
+          await store.frontier.set({ repo: stack.repo, source: "gh" })
+        ).toEqual({
+          generation: 1,
+          prs: [
+            { pr: 20, branches: "stack/merged", sha: stack.mergedSha, state: "OPEN" },
+            { pr: 21, branches: "stack/closed", sha: stack.closedSha, state: "OPEN" },
+            { pr: 22, branches: "stack/open", sha: stack.openSha, state: "OPEN" },
+          ],
+          lowestUnmerged: 20,
+        });
+        await expect(
+          store.frontier.set({ repo: stack.repo, source: "gh", prs: [20, 22] })
+        ).rejects.toThrow("frontier pin mismatch: extra in gh: 21");
+      },
+    });
+  });
+
+  it("treats a plain pull request to trunk as a one-PR stack", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeGh({
+      directory,
+      pullRequests: [
+        { number: 22, headRefName: "stack/open", baseRefName: "main", headRefOid: stack.openSha },
+      ],
+      operation: async () => {
+        expect(
+          (await store.frontier.set({ repo: stack.repo, source: "gh" })).prs
+        ).toEqual([
+          { pr: 22, branches: "stack/open", sha: stack.openSha, state: "OPEN" },
+        ]);
+      },
+    });
+  });
+
+  it("refuses a stack it cannot resolve from open pull requests", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+    const open = { number: 22, headRefName: "stack/open", baseRefName: "stack/closed", headRefOid: stack.openSha };
+
+    await withFakeGh({
+      directory,
+      pullRequests: [open],
+      operation: async () => {
+        await expect(
+          store.frontier.set({ repo: stack.repo, source: "gh" })
+        ).rejects.toThrow(
+          "#22 is based on stack/closed, which has no open pull request; restack it onto main first"
+        );
+      },
+    });
+    await rm(join(directory, "gh-bin"), { recursive: true });
+    await withFakeGh({
+      directory,
+      pullRequests: [
+        { ...open, baseRefName: "main" },
+        { number: 24, headRefName: "top/a", baseRefName: "stack/open", headRefOid: stack.openSha },
+        { number: 25, headRefName: "top/b", baseRefName: "stack/open", headRefOid: stack.openSha },
+      ],
+      operation: async () => {
+        await expect(
+          store.frontier.set({ repo: stack.repo, source: "gh" })
+        ).rejects.toThrow(
+          "#22 has more than one child pull request (#24,#25); the frontier needs one linear stack"
+        );
+      },
+    });
+    await rm(join(directory, "gh-bin"), { recursive: true });
+    await withFakeGh({
+      directory,
+      pullRequests: [],
+      operation: async () => {
+        await expect(
+          store.frontier.set({ repo: stack.repo, source: "gh" })
+        ).rejects.toThrow(
+          "branch stack/open has no open pull request; check out a branch of the stack"
+        );
+      },
+    });
+  });
+
   it("rejects unparseable Graphite output loudly", async () => {
     const { directory, store } = await initializedStore();
     const stack = await makeGitStack(directory);
@@ -553,6 +706,7 @@ describe("orch CLI", () => {
     expect(frontierHelp.code).toBe(0);
     expect(frontierHelp.stdout).toContain("--repo <dir>");
     expect(frontierHelp.stdout).toContain("--prs <n,...>");
+    expect(frontierHelp.stdout).toContain("--source <source>");
 
     const directory = await makeDirectory();
     const invalid = runCli(["--store", directory, "unit", "add", "u1"]);
