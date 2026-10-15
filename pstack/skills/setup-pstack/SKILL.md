@@ -1,21 +1,21 @@
 ---
 name: setup-pstack
-description: Configure which models pstack uses per role and at what reasoning budget. Detects your available models and writes an always-applied rule that overrides the skill defaults. Use for /setup-pstack, "configure pstack models", "pstack budget", or changing pstack's model choices.
+description: Configure which models pstack uses per role and at what reasoning budget. Detects your available models and writes the pstack roles section of the role file, which overrides the skill defaults. Use for /setup-pstack, "configure pstack models", "pstack budget", or changing pstack's model choices.
 ---
 
 # Setup pstack
 
-Write `~/.cursor/rules/pstack-models.mdc`, an always-applied rule that sets pstack's model per role.
+Write the pstack roles section of the role file, which sets pstack's model per role. The role file is two files with the same sections, `~/lim-v2/AGENTS.md` (Codex, Cursor) and `~/lim-v2/CLAUDE.md` (Claude Code). The section is the fenced block under `## pstack roles`. Run this from a v2 thread, so the catalog you detect is v2's.
 
 ## Steps
 
 ### 1. Detect available models
 
-Enumerate the model slugs you can pass to a `Task` subagent in this session. That is the dependable source. If Cursor also exposes a models API or CLI that lists the user's entitled models, prefer it for completeness. If you cannot detect any, ask the user to paste the slugs they have access to. Never write a real slug you have not confirmed is available. The aliases `inherit-parent` and `auto` are always valid even though they are not detected slugs.
+Call `orchestrator_capabilities`. Every model of a provider instance that can run a child task, with each of its option values, is a target you can pass to `delegate_task`. That is the dependable source. A real entry is `<providerInstanceId>/<model> <option>=<value>`, such as `claudeAgent/claude-opus-5-5 effort=xhigh`. If you cannot detect any, ask the user to paste the entries they have access to. Never write a real entry you have not confirmed is available. The aliases `inherit-parent` and `auto` are always valid even though they are not detected entries.
 
 ### 2. Load current state
 
-The default role-to-model mapping is the rule shape shown in step 5 below. If `~/.cursor/rules/pstack-models.mdc` already exists, read it and treat its `# budget` line and its role values as the current choices. Otherwise start from those defaults. A line whose role is not in step 5, such as `how critics`, is from a retired role. Drop it.
+The default role-to-model mapping is the block shape shown in step 5 below. If the role file already has the block, read it and treat its `# budget` line and its role values as the current choices. Otherwise start from those defaults. A line whose role is not in step 5, such as `how critics`, is from a retired role. Drop it. Two lines are not model roles, so keep them as they are: `cloud workers` (where cloud work runs) and a `counterparts` value (it points at the role file's Counterparts list).
 
 ### 3. Budget, map, and confirm
 
@@ -26,48 +26,45 @@ The default role-to-model mapping is the rule shape shown in step 5 below. If `~
 - `medium — high reasoning`
 - `small — medium reasoning`
 
-**(b) Apply it.** Build the working table from the skill defaults, and on a re-run keep any role you changed by family, list, or alias (`inherit-parent`, `auto`). `unlimited`, `large`, `medium`, and `small` set the effort token of every real slug, panel entries included, to `max`, `xhigh`, `high`, or `medium`. The effort token is the last token, or the one before a trailing `fast`, on the ladder `max` > `xhigh` > `high` > `medium` > `low`. If the result is not a detected slug, use the same family's detected slug with the highest effort at or below the target, else mark the role as needing a choice. `inherit-parent` and `auto` do not change. So `unlimited` turns `claude-opus-5-5-xhigh` into `claude-opus-5-5-max`. Grok slugs top out at `xhigh`, so under `unlimited` the fallback puts Grok at `xhigh` and keeps `grok-4.7-xhigh-fast` as it is. `large` keeps both defaults. `small` turns them into `claude-opus-5-5-medium` and `grok-4.7-medium-fast`.
+**(b) Apply it.** Build the working table from the skill defaults, and on a re-run keep any role you changed by family, list, or alias (`inherit-parent`, `auto`). `unlimited`, `large`, `medium`, and `small` set the effort option of every real entry, panel entries included, to `max`, `xhigh`, `high`, or `medium`. The effort option is the one the model takes for reasoning (`effort`, `reasoningEffort`, or `reasoning_effort`), on the ladder `max` > `xhigh` > `high` > `medium` > `low`. Other options, such as `fastMode=true`, stay. If the model does not offer the target value, use its highest value at or below the target, else the same family's detected model that does, else mark the role as needing a choice. `inherit-parent` and `auto` do not change. So `unlimited` turns `claudeAgent/claude-opus-5-5 effort=xhigh` into `effort=max`. A model whose effort tops out at `xhigh` stays at `xhigh` under `unlimited`. `large` keeps both defaults. `small` turns them into `effort=medium` and `reasoning_effort=medium`.
 
-**(c) Show the roles and confirm.** Show every role with its model, marking any real slug not in the detected set as needing a choice. Also list each line step 2 dropped. Ask whether to accept as-is or change specific roles, offering the detected models plus `inherit-parent` and `auto` (both mean: this role runs on the parent chat model, which is how Auto users stay on Auto) as the options. Prefer the harness's ask-the-user tool over free text, or ask in chat when it has none. For panel roles (arena runners, architect runners, interrogate reviewers) the value is a list, and one subagent runs per entry, alias entries included, so the list length sets the count. `arena cross-judge pool` is also a list, but Arena selects one value from it whose model family differs from the parent's when possible. `swarm workers` is the default model for every worker unless a race or comparison assigns another model per arm.
+**(c) Show the roles and confirm.** Show every role with its model, marking any real entry not in the detected set as needing a choice. Also list each line step 2 dropped. Ask whether to accept as-is or change specific roles, offering the detected models plus `inherit-parent` and `auto` (both mean: this role runs on the parent thread's model, with no `target`) as the options. Prefer the harness's ask-the-user tool over free text, or ask in chat when it has none. For panel roles (arena runners, architect runners, interrogate reviewers) the value is a list, and one subagent runs per entry, alias entries included, so the list length sets the count. `arena cross-judge pool` is also a list, but Arena selects one value from it whose model family differs from the parent's when possible. `swarm workers` is the default model for every worker unless a race or comparison assigns another model per arm.
 
 ### 4. Validate
 
-Every real slug written must be in the detected set. `inherit-parent` and `auto` always pass. If a chosen real slug is not available, stop and ask again.
+Every real entry written must be in the detected set: its provider instance, its model, and each option value. `inherit-parent` and `auto` always pass. If a chosen real entry is not available, stop and ask again.
 
-### 5. Write the rule
+### 5. Write the block
 
-Write `~/.cursor/rules/pstack-models.mdc` with `alwaysApply: true`, a `# budget` line with the chosen label and its target effort, and one line per role, using the same labels poteto-mode uses. Overwrite the whole file so re-runs stay idempotent. Shape:
+Write the block, the same in both files, with a `# budget` line with the chosen label and its target effort, and one line per role, using the same labels poteto-mode uses, then the `cloud workers` line. Replace the whole fenced block so re-runs stay idempotent. Leave the rest of each file as it is, including the notes under the block, and update a note only where it names a value you changed. Shape:
 
 ```
----
-description: pstack per-role model choices (overrides skill defaults)
-alwaysApply: true
----
 # pstack model configuration. One line per role. Delete a line to fall back to the skill default.
-# `inherit-parent` or `auto` as a value: the role runs on the parent chat model (omit Task `model`). Alias entries in a panel list still count toward its fan-out.
+# `inherit-parent` or `auto` as a value: the role runs on the parent thread's model (omit `target`). Alias entries in a panel list still count toward its fan-out.
 # budget: large (xhigh)
-feature, refactoring: grok-4.7-xhigh-fast
-bug-fix: grok-4.7-xhigh-fast
-perf-issue: grok-4.7-xhigh-fast
-hillclimb: grok-4.7-xhigh-fast
-judgment and prose: claude-opus-5-5-xhigh
-hardest tasks: claude-opus-5-5-xhigh
-how explorer: grok-4.7-xhigh-fast
-how explainer: claude-opus-5-5-xhigh
-why investigators: grok-4.7-xhigh-fast
-why synthesizer: claude-opus-5-5-xhigh
-reflect tooling: grok-4.7-xhigh-fast
-reflect judgment, divergent, synthesizer: claude-opus-5-5-xhigh
-arena runners: claude-opus-5-5-xhigh, grok-4.7-xhigh-fast
-arena cross-judge pool: claude-opus-5-5-xhigh, grok-4.7-xhigh-fast
-swarm workers: grok-4.7-xhigh-fast
-architect runners: claude-opus-5-5-xhigh, grok-4.7-xhigh-fast
-interrogate reviewers: claude-opus-5-5-xhigh, grok-4.7-xhigh-fast
+feature, refactoring: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+bug-fix: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+perf-issue: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+hillclimb: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+judgment and prose: claudeAgent/claude-opus-5-5 effort=xhigh
+hardest tasks: claudeAgent/claude-opus-5-5 effort=xhigh
+how explorer: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+how explainer: claudeAgent/claude-opus-5-5 effort=xhigh
+why investigators: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+why synthesizer: claudeAgent/claude-opus-5-5 effort=xhigh
+reflect tooling: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+reflect judgment, divergent, synthesizer: claudeAgent/claude-opus-5-5 effort=xhigh
+arena runners: claudeAgent/claude-opus-5-5 effort=xhigh, cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+arena cross-judge pool: claudeAgent/claude-opus-5-5 effort=xhigh, cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+swarm workers: cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+architect runners: claudeAgent/claude-opus-5-5 effort=xhigh, cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+interrogate reviewers: claudeAgent/claude-opus-5-5 effort=xhigh, cursor/grok-4.7 reasoning_effort=xhigh fastMode=true
+cloud workers: cursor-cloud
 ```
 
 ### 6. Confirm
 
-Tell the user the rule was written and that it applies to new sessions. Re-running this skill updates it.
+Tell the user both files were written and that the change applies to new sessions. Re-running this skill updates it.
 
 ### 7. Offer a verification skill (optional)
 
