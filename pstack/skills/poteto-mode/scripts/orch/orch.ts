@@ -49,6 +49,8 @@ interface UnitSetOptions {
   readonly branch?: string;
   readonly pr?: number;
   readonly sha?: string;
+  readonly task?: string;
+  readonly thread?: string;
 }
 
 interface UnitListOptions {
@@ -120,6 +122,8 @@ function unitLine(unit: Unit): string {
     unit.pr,
     unit.sha,
     unit.brief,
+    unit.task,
+    unit.thread,
   ].join("\t");
 }
 
@@ -301,6 +305,8 @@ function createProgram(io: Io): Command {
     .option("--branch <branch>", "branch name")
     .option("--pr <number>", "pull request number", positiveInteger)
     .option("--sha <sha>", "commit SHA")
+    .option("--task <id>", "T3 delegate_task taskId")
+    .option("--thread <id>", "T3 child thread id")
     .action((id: string, options: UnitSetOptions) =>
       runStore(
         program,
@@ -312,6 +318,8 @@ function createProgram(io: Io): Command {
             branch: options.branch,
             pr: options.pr,
             sha: options.sha,
+            task: options.task,
+            thread: options.thread,
           }),
         unitLine
       )

@@ -233,6 +233,8 @@ describe("Store", () => {
       branch: "poteto/u1",
       pr: 184530,
       sha: "abc123",
+      task: "node:delegated-task:u1",
+      thread: "thread-u1",
     });
     expect(updated).toEqual({
       id: "u1",
@@ -242,6 +244,8 @@ describe("Store", () => {
       pr: "184530",
       sha: "abc123",
       brief: "briefs/u1.md",
+      task: "node:delegated-task:u1",
+      thread: "thread-u1",
     });
     expect(await store.units.get("u1")).toEqual(updated);
     expect(
@@ -504,7 +508,7 @@ describe("Store", () => {
     );
     await writeFile(
       join(directory, "units.tsv"),
-      "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\nshort\trow\n"
+      "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\ttask\tthread\nshort\trow\n"
     );
     await expect(store.units.list()).rejects.toThrow(
       "units.tsv has a malformed row"
@@ -574,6 +578,8 @@ describe("orch CLI", () => {
       pr: "",
       sha: "",
       brief: "",
+      task: "",
+      thread: "",
     });
   });
 

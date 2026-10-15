@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
-const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
+const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\ttask\tthread";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
 const LOCK_FILE = ".orch.lock";
 
@@ -33,6 +33,8 @@ export interface Unit {
   readonly pr: string;
   readonly sha: string;
   readonly brief: string;
+  readonly task: string;
+  readonly thread: string;
 }
 
 export interface LedgerEntry {
@@ -126,6 +128,8 @@ export interface SetUnitParams {
   readonly branch?: string;
   readonly pr?: number;
   readonly sha?: string;
+  readonly task?: string;
+  readonly thread?: string;
 }
 
 export interface ListUnitsParams {
@@ -470,7 +474,7 @@ async function writeTsv(
 }
 
 async function readUnits(store: string): Promise<readonly Unit[]> {
-  return (await readTsv(join(store, "units.tsv"), UNIT_HEADER, 7)).map(
+  return (await readTsv(join(store, "units.tsv"), UNIT_HEADER, 9)).map(
     (row) => ({
       id: row[0] ?? "",
       track: row[1] ?? "",
@@ -479,6 +483,8 @@ async function readUnits(store: string): Promise<readonly Unit[]> {
       pr: row[4] ?? "",
       sha: row[5] ?? "",
       brief: row[6] ?? "",
+      task: row[7] ?? "",
+      thread: row[8] ?? "",
     })
   );
 }
@@ -492,6 +498,8 @@ function unitCells(unit: Unit): readonly string[] {
     unit.pr,
     unit.sha,
     unit.brief,
+    unit.task,
+    unit.thread,
   ];
 }
 
@@ -1255,6 +1263,8 @@ export function openStore(
             params.brief === undefined
               ? ""
               : requiredCell(params.brief, "brief"),
+          task: "",
+          thread: "",
         };
         const rows = [...(await readUnits(store))];
         if (rows.some((unit) => unit.id === row.id)) {
@@ -1289,6 +1299,14 @@ export function openStore(
             params.sha === undefined
               ? old.sha
               : requiredCell(params.sha, "SHA"),
+          task:
+            params.task === undefined
+              ? old.task
+              : requiredCell(params.task, "task id"),
+          thread:
+            params.thread === undefined
+              ? old.thread
+              : requiredCell(params.thread, "thread id"),
         };
         rows[index] = row;
         await saveUnits(store, rows);
