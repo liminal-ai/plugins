@@ -5,7 +5,7 @@ description: Configure which models pstack uses per role and at what reasoning b
 
 # Setup pstack
 
-Write the pstack roles section of the role file, which sets pstack's model per role. The role file is two files with the same sections, `~/lim-v2/AGENTS.md` (Codex, Cursor) and `~/lim-v2/CLAUDE.md` (Claude Code). The section is the fenced block under `## pstack roles`. Run this from a v2 thread, so the catalog you detect is v2's.
+Write the pstack roles section of the role file, which sets pstack's model per role. The role file is `~/lim-v2/AGENTS.md`. `~/lim-v2/CLAUDE.md`, which Claude Code reads, is a symlink to it. Write `AGENTS.md` by its own path, and never replace the symlink with a regular file. The section is the fenced block under `## pstack roles`. Run this from a v2 thread, so the catalog you detect is v2's.
 
 ## Steps
 
@@ -36,7 +36,7 @@ Every real entry written must be in the detected set: its provider instance, its
 
 ### 5. Write the block
 
-Write the block, the same in both files, with a `# budget` line with the chosen label and its target effort, and one line per role, using the same labels poteto-mode uses, then the `cloud workers` line. Replace the whole fenced block so re-runs stay idempotent. Leave the rest of each file as it is, including the notes under the block, and update a note only where it names a value you changed. Shape:
+Write the block into `~/lim-v2/AGENTS.md` only, with a `# budget` line with the chosen label and its target effort, and one line per role, using the same labels poteto-mode uses, then the `cloud workers` line. Replace the whole fenced block so re-runs stay idempotent. Leave the rest of the file as it is, including the notes under the block, and update a note only where it names a value you changed. Shape:
 
 ```
 # pstack model configuration. One line per role. Delete a line to fall back to the skill default.
@@ -64,7 +64,7 @@ cloud workers: cursor-cloud
 
 ### 6. Confirm
 
-Tell the user both files were written and that the change applies to new sessions. Re-running this skill updates it.
+Tell the user the role file was written and that the change applies to new sessions. Re-running this skill updates it.
 
 ### 7. Offer a verification skill (optional)
 
