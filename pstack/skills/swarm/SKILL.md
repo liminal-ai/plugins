@@ -9,7 +9,7 @@ Fan out N parallel cloud workers. They may cover separate slices, race the same 
 
 ## Start
 
-Open a todolist with one entry per phase before launching anything.
+Open a todolist, where poteto-mode's Playbooks section puts it, with one entry per phase before launching anything.
 
 1. Frame
 2. Fan out

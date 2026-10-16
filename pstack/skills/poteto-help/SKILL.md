@@ -49,7 +49,7 @@ This pstack is ported from Cursor to T3 Code. Its workflow skills, including `/p
 
 Start each task thread with `/poteto-mode`. It attaches the skill to that message, and it fades as the chat moves on.
 
-Mid-chat, "new task" makes the mode match a fresh playbook. `/poteto-mode` already uses `poteto-agent` for the subagents its playbook steps spawn. To get the same style from a subagent of your own, start its brief by telling it to read poteto-mode's `SKILL.md` in full, as `agents/poteto-agent.md` says.
+Mid-chat, "new task" makes the mode match a fresh playbook. `/poteto-mode` already uses `poteto-agent` for the subagents its playbook steps spawn. To get the same style from a subagent of your own, start its brief by telling it to read `~/.agents/skills/poteto-mode/SKILL.md` in full, as `~/.agents/agents/poteto-agent.md` says.
 
 ## Pick a skill
 
