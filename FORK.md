@@ -5,7 +5,8 @@ Fork of `cursor/plugins`, default branch `lim`. Fork point: upstream `11713c6` (
 ## Upstream drift
 
 ```bash
-git remote add upstream https://github.com/cursor/plugins.git; git fetch upstream origin
+git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/cursor/plugins.git
+git fetch --multiple upstream origin
 git log --oneline 11713c6..upstream/main -- pstack cursor-team-kit/skills   # upstream commits since fork
 git show upstream/main:pstack/.cursor-plugin/plugin.json | rg version        # upstream pstack version
 comm -12 <(git diff --name-only 11713c6 upstream/main -- pstack | sort) \
@@ -29,12 +30,12 @@ Always a branch and a PR into `lim`, never a direct push. If many files changed 
 ```bash
 rg -n "show origin/lim:" pstack/skills/poteto-mode/scripts/check-plan.mjs
 rg -n "~/lim-v2/AGENTS.md" pstack/skills/setup-pstack/SKILL.md
-(cd pstack/skills/poteto-mode/scripts && bun test)
+(cd pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun test)
 ```
 
 ## Deploying
 
-Installs are copies, so a merge changes nothing until a reinstall. Only the autopilot and multi-phase-plan tick re-reads and `check-plan.mjs` read `origin/lim` (hourly), so a merge without a reinstall splits running programs between new playbooks and old skills and scripts. Merge, then reinstall at once for each user with the install steps in `poteto-help` (rsync `pstack/skills/*` into `~/.agents/skills`, link `~/.claude/skills/<name>`, copy `pstack/agents`). Verify: `diff -r pstack/skills/<name> ~/.agents/skills/<name>`.
+Installs are copies, so a merge changes nothing until a reinstall. Only the hourly audit ticks in autopilot-full, autopilot-stack and multi-phase-plan re-read playbooks from `origin/lim` (`check-plan.mjs` requires plans to include that re-read), so a merge without a reinstall splits running programs between new playbooks and old skills and scripts. Merge, then reinstall at once for each user with the install steps in `poteto-help` (rsync `pstack/skills/*` into `~/.agents/skills`, link `~/.claude/skills/<name>`, copy `pstack/agents`). Verify: `diff -r pstack/skills/<name> ~/.agents/skills/<name>`.
 
 ## bun
 
