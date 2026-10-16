@@ -34,7 +34,7 @@ When a role line is missing and it matters, ask whether the user wants to pick t
 ## Get set up
 
 1. Install per user, as a Cursor plugin would be. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` into `~/.agents/skills/<name>` (`rsync -a --delete`, so files the fork dropped go too), symlink each as `~/.claude/skills/<name> -> ../../.agents/skills/<name>`, and copy `pstack/agents` into `~/.agents/agents`. Re-run the same copy after each fork update. A repo's own `.agents/skills` holds only its generated `verify-<app>` skills.
-2. Run [`/setup-pstack`](../setup-pstack/SKILL.md) from a v2 thread. It asks for a reasoning budget, maps a model to each role from `orchestrator_capabilities`, and writes the pstack roles section of the role file (`~/lim-v2/AGENTS.md`, mirrored in `~/lim-v2/CLAUDE.md`). The files load into new threads.
+2. Run [`/setup-pstack`](../setup-pstack/SKILL.md) from a v2 thread. It asks for a reasoning budget, maps a model to each role from `orchestrator_capabilities`, and writes the pstack roles section of the role file (`~/lim-v2/AGENTS.md`, which `~/lim-v2/CLAUDE.md` links to). The file loads into new threads.
 3. Start a real task with `/poteto-mode`, a goal, and a check that can pass or fail.
 
 Installing changes nothing until the user invokes a skill. Only `/setup-pstack`, `deslop`, `control-ui`, and `control-cli` load from the user's words. The [README](../../README.md) and [guide page 1](../../docs/guide/01-setup.md) have the details. Offer to word their first prompt with them, per [`references/prompting.md`](references/prompting.md).
@@ -79,7 +79,7 @@ The default answer is `/poteto-mode`, which runs most of the others when its ste
 | Vet a performance number before reporting or acting on it | [`/benchmark-checklist`](../benchmark-checklist/SKILL.md) |
 | Run a large or cross-cutting change, or one to review after stepping away | [`/figure-it-out`](../figure-it-out/SKILL.md) |
 | Keep a decision log during a run, and review it afterward | [`/show-me-your-work`](../show-me-your-work/SKILL.md) |
-| Pick a model for each role and a reasoning budget | The role file in `~/lim-v2/AGENTS.md` and `~/lim-v2/CLAUDE.md` |
+| Pick a model for each role and a reasoning budget | The role file in `~/lim-v2/AGENTS.md` |
 | Turn their own working habits into a personal mode skill | [`/automate-me`](../automate-me/SKILL.md) |
 | Pick a model for each role and a reasoning budget | [`/setup-pstack`](../setup-pstack/SKILL.md) |
 | Turn what a finished task taught into skill edits | [`/reflect`](../reflect/SKILL.md) |
@@ -126,7 +126,7 @@ Principles are one-rule skills that `/poteto-mode` reads and cites in its replie
 |---|---|
 | The mode stopped applying after a few turns | Start each task thread with `/poteto-mode`. |
 | A question got treated as the next step of the last task | Say "new task", or say the turn doesn't need the mode. |
-| A new model choice had no effect | The role file loads into new threads. Start one, and check the line is in both `AGENTS.md` and `CLAUDE.md`. |
+| A new model choice had no effect | The role file loads into new threads. Start one, and check the line is in `~/lim-v2/AGENTS.md`. |
 | Runs cost more than expected | See the cost paragraph under Get set up. |
 | A skill didn't load on its own | Only `/setup-pstack`, `deslop`, `control-ui`, and `control-cli` load from the user's words. The others load when the user types them or when `/poteto-mode` runs them, and it doesn't run every skill. |
 | Parallel agents overwrote each other | Give each agent its own worktree, or run them as cloud agents, which each get their own machine. |
