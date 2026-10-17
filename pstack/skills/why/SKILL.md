@@ -7,7 +7,7 @@ description: "Use for 'why does X work this way', 'why we picked Y', design rati
 
 Investigate the motivation and intent behind code. The companion `how` skill answers what the code does and how it works. `why` answers what forces led to its shape.
 
-Each spawn below names a role line in the role file (`~/lim-v2/AGENTS.md` or `~/lim-v2/CLAUDE.md`) and a default. Set `delegate_task`'s `target` to that line's entry, or to the default if the file or the line is missing. Omit `target` when the value is `auto` or `inherit-parent`. If `delegate_task` rejects an entry, use the default and say so. If it rejects the default, use the closest model of the same family that `orchestrator_capabilities` lists.
+Each spawn below names a role line in the role file (`~/lim-v2/AGENTS.md` or `~/lim-v2/CLAUDE.md`) and a default. Set `delegate_task`'s `target` to that line's entry, or to the default if the file or the line is missing. Omit `target` when the value is `auto` or `inherit-parent`. If `delegate_task` rejects an entry, use the default and say so. If it rejects the default, use the closest model of the same family that `orchestrator_capabilities` lists. Pick each subagent's effort for the job, per the Subagents section of the **poteto-mode** skill.
 
 Every spawn is a `delegate_task` child (`mode: "async"`) in a read-only role: its prompt says no file writes and no external mutation. It keeps its MCP tools, which the MCP-backed investigators and the synthesizer's citation spot-checks read through. Each child's final message is its findings.
 
