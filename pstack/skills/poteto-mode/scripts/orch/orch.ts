@@ -7,8 +7,8 @@ import {
   openStore,
   parseVerdict,
   type Counts,
+  type Forge,
   type Frontier,
-  type FrontierSource,
   type InboxPointer,
   type OpenGate,
   type StandingLine,
@@ -84,8 +84,8 @@ interface GateResolveOptions {
 
 interface FrontierSetOptions {
   readonly repo?: string;
+  readonly forge: Forge;
   readonly prs?: readonly number[];
-  readonly source?: FrontierSource;
 }
 
 function message(error: unknown): string {
@@ -487,7 +487,7 @@ function createProgram(io: Io): Command {
   leaf(
     frontier,
     "set",
-    "discover the current branch's stack and set the frontier"
+    "resolve the pull request base chain and set the frontier"
   )
     .addOption(
       new Option(
@@ -495,18 +495,15 @@ function createProgram(io: Io): Command {
         "repository directory (or ORCH_REPO)"
       ).env("ORCH_REPO")
     )
+    .addOption(
+      new Option("--forge <forge>", "pull request forge")
+        .choices(["gh", "origin"])
+        .default("gh")
+    )
     .option(
       "--prs <n,...>",
       "optional expected pull request order pin",
       prList
-    )
-    .addOption(
-      new Option(
-        "--source <source>",
-        "where the stack comes from: gt (Graphite) or gh (open PRs and their bases)"
-      )
-        .choices(["gt", "gh"])
-        .default(Bun.which("gt") === null ? "gh" : "gt")
     )
     .action((options: FrontierSetOptions) =>
       runStore(
@@ -515,8 +512,8 @@ function createProgram(io: Io): Command {
         (store) =>
           store.frontier.set({
             repo: frontierRepo(options),
+            forge: options.forge,
             prs: options.prs,
-            source: options.source,
           }),
         frontierLine
       )

@@ -58,6 +58,11 @@ const BANNED = [
     fix: "Say the repo's default branch (trunk). For pstack itself, trunk is origin/lim.",
   },
   {
+    id: "effort-raise",
+    pattern: /Raise it one step|up to max|job is urgent/g,
+    fix: "Effort only goes down from the role line, and urgency does not change it. See the Effort row.",
+  },
+  {
     id: "hidden-skill",
     pattern: /^disable-model-invocation:\s*true\b/g,
     fix: "Keep skills visible. End the description with \"Use only when the user or another skill names it.\"",
@@ -80,6 +85,7 @@ const REQUIRED = [
   ["pstack/skills/poteto-mode/SKILL.md", "~/lim-v2/AGENTS.md", "Roles come from the role file."],
   ["pstack/skills/poteto-mode/SKILL.md", "todos/<YYYY-MM-DD>-<task-slug>.md", "The todo list is a file in the pstack store."],
   ["pstack/skills/poteto-mode/SKILL.md", "Claude fast mode", "State the Claude fast-mode consent rule."],
+  ["pstack/skills/poteto-mode/SKILL.md", "Never raise it above the role line", "Effort is lower-only from the role line."],
   ["pstack/skills/setup-pstack/SKILL.md", "~/lim-v2/AGENTS.md", "setup-pstack writes the role file."],
   ["pstack/skills/setup-pstack/SKILL.md", "Claude fast mode", "setup-pstack never writes Claude fast mode."],
   ["pstack/skills/poteto-mode/playbooks/babysit.md", "watch_pull_request", "Babysit wakes on T3's PR watch."],
@@ -90,10 +96,6 @@ const REQUIRED = [
 // matches allowed. More matches is new drift. Fewer means the count must come down,
 // and zero means the entry is stale. So the list shrinks to empty as the sync lands.
 const PENDING = [
-  { rule: "graphite", file: "pstack/skills/poteto-mode/playbooks/orchestrate.md", count: 3, until: "sync PR C" },
-  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/store.ts", count: 11, until: "sync PR C" },
-  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/orch.test.ts", count: 1, until: "sync PR C" },
-  { rule: "trunk-main", file: "pstack/skills/poteto-mode/playbooks/autopilot-full.md", count: 2, until: "sync PR C" },
 ];
 
 function walk(dir) {

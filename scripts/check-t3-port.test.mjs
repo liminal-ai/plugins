@@ -51,10 +51,27 @@ const regressions = [
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": [{"id": "effort", "value": "high"}, {"id": "fastMode", "value": true}]}\n'],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId":"claudeAgent","options":[{"value":true,"id":"fastMode"}]}\n'],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + "\nconst target = {\n  providerInstanceId: 'claudeAgent', // } closes this object\n  options: { fastMode: true }\n};\n"],
+  ["effort-raise", "pstack/skills/poteto-mode/SKILL.md", (s) => s + "\nRaise it one step for a hard job.\n"],
+  ["effort-raise", "pstack/skills/swarm/SKILL.md", (s) => s + "\nA lane may go up to max.\n"],
+  ["effort-raise", "pstack/skills/arena/SKILL.md", (s) => s + "\nUse the fast slug when the job is urgent.\n"],
+  ["missing-anchor", "pstack/skills/poteto-mode/SKILL.md", (s) => s.replace("Never raise it above the role line", "Raise it when the job needs it")],
 ];
 
-const firstPending = readFileSync(script, "utf-8").match(/\{ rule: "[^"]+", file: "([^"]+)"/)?.[1];
-if (firstPending) regressions.push(["stale-pending", firstPending, () => ""]);
+
+test("a PENDING entry with no match left fails as stale", () => {
+  const root = copyTree();
+  const planted = join(root, "check-t3-port.mjs");
+  writeFileSync(
+    planted,
+    readFileSync(script, "utf-8").replace(
+      "const PENDING = [",
+      'const PENDING = [\n  { rule: "graphite", file: "pstack/skills/why/SKILL.md", count: 1, until: "never" },',
+    ),
+  );
+  const run = spawnSync(process.execPath, [planted, root], { encoding: "utf-8" });
+  assert.equal(run.status, 1);
+  assert.match(run.stdout + run.stderr, /\[stale-pending\]/);
+});
 
 const accepted = [
   ["a folded description with a blank line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: >-\n  Explain why.\n\n  Use only when the user or another skill names it.")],
