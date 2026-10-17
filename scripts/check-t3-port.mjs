@@ -14,52 +14,61 @@ const TEXT = /\.(md|mjs|js|ts|sh|json|tsv)$/;
 const BANNED = [
   {
     id: "cursor-subagent",
-    pattern: /\bsubagent_type\b|`Task`|\bTask tool\b|\bgeneralPurpose\b|\breadonly: true\b|\bcloud_base_branch\b|\bis_background\b/,
+    pattern: /\bsubagent_type\b|`Task`|\bTask tool\b|\bgeneralPurpose\b|\breadonly: (?:true|false)\b|\bcloud_base_branch\b|\bis_background\b|\brun_in_background\b|\benvironment: "(?:cloud|local)"/g,
     fix: "Spawn subagents as T3 delegate_task children with a target from the role file.",
   },
   {
     id: "cursor-rule-file",
-    pattern: /~\/\.cursor\/rules|pstack-models\.mdc/,
+    pattern: /~\/\.cursor\/rules|pstack-models\.mdc/g,
     fix: "Model roles live in the pstack roles block of ~/lim-v2/AGENTS.md.",
   },
   {
+    id: "cursor-install",
+    pattern: /~\/\.cursor\/plugins/g,
+    fix: "pstack is installed per user at ~/.agents/skills/<name>/SKILL.md. Point at that path.",
+  },
+  {
     id: "cursor-ask-tool",
-    pattern: /\bAskQuestion\b/,
+    pattern: /\bAskQuestion\b/g,
     fix: "Ask in chat, or with the harness's ask-the-user tool.",
   },
   {
     id: "todo-tool",
-    pattern: /\bTodoWrite\b/,
+    pattern: /\bTodoWrite\b/g,
     fix: "Keep the todo list as a checklist file under todos/ in the pstack store.",
   },
   {
     id: "fast-slug",
-    pattern: /\b[a-z][a-z0-9.-]*-(?:low|medium|high|xhigh|max)-fast\b/,
+    pattern: /\b[a-z][a-z0-9.-]*-(?:low|medium|high|xhigh|max)-fast\b/g,
     fix: "Speed is a T3 option on the role line (fastMode for Grok, serviceTier for GPT), not a -fast model name.",
   },
   {
     id: "claude-fast-default",
-    pattern: /claude[a-zA-Z]*\/claude-[a-z0-9-]+[^\n,`]*\bfastMode=true/,
-    fix: "Claude fast mode is never a default. Only the operator turns it on, for a task they name.",
+    pattern: /claude[a-zA-Z]*\/claude-[a-z0-9-]+[^\n,`]*\bfastMode=true/g,
+    fix: "Claude fast mode is never a default. Only the operator turns it on, for work they name.",
   },
   {
     id: "graphite",
-    pattern: /\bgt (?:log|sync|submit|restack|get|create|modify|checkout|track|info)\b|`gt`, or without it|run `gt`|\bno gt,/,
+    pattern: /\bgt (?:log|sync|submit|restack|get|create|modify|checkout|track|info)\b|`gt`, or without it|run `gt`|\bno gt,/g,
     fix: "Resolve stacks from the PR base chain with gh. Graphite is not installed here.",
   },
   {
     id: "trunk-main",
-    pattern: /\borigin\/main\b/,
+    pattern: /\borigin\/main\b/g,
     fix: "Say the repo's default branch (trunk). For pstack itself, trunk is origin/lim.",
   },
   {
     id: "hidden-skill",
-    pattern: /^disable-model-invocation:/m,
+    pattern: /^disable-model-invocation:\s*true\b/g,
     fix: "Keep skills visible. End the description with \"Use only when the user or another skill names it.\"",
   },
 ];
 
+// A structured T3 target can span lines, so this one runs over the whole file.
+const CLAUDE_FAST_TARGET = /providerInstanceId"?\s*:\s*"?claudeAgent\b(?:(?!providerInstanceId)[\s\S]){0,300}?"?fastMode"?\s*[:=]\s*true\b/g;
+
 const NAMED_ONLY = "Use only when the user or another skill names it.";
+// These load from the user's own wording on purpose, so they skip the named-only ending.
 const AUTO_LOAD = new Set(["control-cli", "control-ui", "deslop", "setup-pstack"]);
 
 const REQUIRED = [
@@ -73,15 +82,16 @@ const REQUIRED = [
   ["pstack/skills/poteto-mode/scripts/check-plan.mjs", "show origin/lim:", "Plans re-read playbooks from origin/lim."],
 ];
 
-// Known drift that a later PR in the current sync removes. An entry that no longer
-// matches anything fails the check, so this list shrinks to empty as the sync lands.
+// Known drift that a later PR in the current sync removes, with the exact number of
+// matches allowed. More matches is new drift. Fewer means the count must come down,
+// and zero means the entry is stale. So the list shrinks to empty as the sync lands.
 const PENDING = [
-  { rule: "graphite", file: "pstack/skills/poteto-mode/playbooks/orchestrate.md", until: "sync PR C" },
-  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/store.ts", until: "sync PR C" },
-  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/orch.test.ts", until: "sync PR C" },
-  { rule: "trunk-main", file: "pstack/skills/poteto-mode/scripts/worktree-audit.sh", until: "sync PR B" },
-  { rule: "cursor-subagent", file: "pstack/agents/poteto-agent.md", until: "sync PR B" },
-  { rule: "trunk-main", file: "pstack/skills/poteto-mode/playbooks/autopilot-full.md", until: "sync PR C" },
+  { rule: "graphite", file: "pstack/skills/poteto-mode/playbooks/orchestrate.md", count: 3, until: "sync PR C" },
+  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/store.ts", count: 11, until: "sync PR C" },
+  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/orch.test.ts", count: 1, until: "sync PR C" },
+  { rule: "trunk-main", file: "pstack/skills/poteto-mode/scripts/worktree-audit.sh", count: 3, until: "sync PR B" },
+  { rule: "trunk-main", file: "pstack/skills/poteto-mode/playbooks/autopilot-full.md", count: 2, until: "sync PR C" },
+  { rule: "cursor-subagent", file: "pstack/agents/poteto-agent.md", count: 1, until: "sync PR B" },
 ];
 
 function walk(dir) {
@@ -93,28 +103,48 @@ function walk(dir) {
   });
 }
 
+function description(text) {
+  const front = text.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+  const lines = front.split("\n");
+  const at = lines.findIndex((l) => /^description:/.test(l));
+  if (at < 0) return "";
+  const head = lines[at].replace(/^description:\s*/, "");
+  if (!/^[>|][-+]?$/.test(head)) return head.replace(/^(["'])(.*)\1$/, "$2").trim();
+  const body = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() && !/^\s/.test(line)) break;
+    body.push(line.trim());
+  }
+  return body.join(" ").replace(/\s+/g, " ").trim();
+}
+
 const failures = [];
-const usedPending = new Set();
 const fail = (where, id, fix) => failures.push(`${where}  [${id}]  ${fix}`);
+const pendingSeen = PENDING.map(() => 0);
 
 for (const path of SCANNED.flatMap((d) => walk(join(root, d)))) {
   const file = relative(root, path);
-  const lines = readFileSync(path, "utf-8").split("\n");
+  const text = readFileSync(path, "utf-8");
+  const lines = text.split("\n");
   for (const rule of BANNED) {
     const pending = PENDING.findIndex((p) => p.rule === rule.id && p.file === file);
     lines.forEach((line, i) => {
-      if (!rule.pattern.test(line)) return;
-      if (pending >= 0) usedPending.add(pending);
-      else fail(`${file}:${i + 1}`, rule.id, rule.fix);
+      for (const _ of line.matchAll(rule.pattern)) {
+        if (pending >= 0) pendingSeen[pending]++;
+        else fail(`${file}:${i + 1}`, rule.id, rule.fix);
+      }
     });
+  }
+  for (const m of text.matchAll(CLAUDE_FAST_TARGET)) {
+    const line = text.slice(0, m.index).split("\n").length;
+    fail(`${file}:${line}`, "claude-fast-default", "Claude fast mode is never a default. Only the operator turns it on, for work they name.");
   }
 }
 
-for (const dir of walk(join(root, "pstack/skills")).filter((p) => p.endsWith("/SKILL.md"))) {
-  const file = relative(root, dir);
+for (const path of walk(join(root, "pstack/skills")).filter((p) => p.endsWith("/SKILL.md"))) {
+  const file = relative(root, path);
   const name = file.split("/").at(-2);
-  const description = readFileSync(dir, "utf-8").match(/^description:\s*(.*(?:\n[ \t]+.*)*)/m)?.[1].replace(/\s+/g, " ") ?? "";
-  if (!AUTO_LOAD.has(name) && !description.includes(NAMED_ONLY)) {
+  if (!AUTO_LOAD.has(name) && !description(readFileSync(path, "utf-8")).endsWith(NAMED_ONLY)) {
     fail(file, "named-only", `End the description with "${NAMED_ONLY}" or add the skill to AUTO_LOAD with a reason.`);
   }
 }
@@ -127,9 +157,10 @@ for (const [file, needle, why] of REQUIRED) {
 }
 
 PENDING.forEach((p, i) => {
-  if (!usedPending.has(i)) {
-    fail(p.file, "stale-pending", `No ${p.rule} match left. Delete this PENDING entry (was until ${p.until}).`);
-  }
+  const seen = pendingSeen[i];
+  if (seen === 0) fail(p.file, "stale-pending", `No ${p.rule} match left. Delete this PENDING entry (was until ${p.until}).`);
+  else if (seen > p.count) fail(p.file, p.rule, `${seen} matches, PENDING allows ${p.count}. Remove the new ones.`);
+  else if (seen < p.count) fail(p.file, "stale-pending", `${seen} ${p.rule} matches left. Lower this PENDING count from ${p.count}.`);
 });
 
 if (failures.length) {

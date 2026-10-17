@@ -40,8 +40,30 @@ const regressions = [
   ["cursor-rule-file", "pstack/skills/setup-pstack/SKILL.md", (s) => s + "\nWrite `~/.cursor/rules/pstack-models.mdc`.\n"],
   ["fast-slug", "pstack/skills/swarm/SKILL.md", (s) => s + "\nDefault `grok-4.7-xhigh-fast`.\n"],
   ["named-only", "pstack/skills/why/SKILL.md", (s) => s.replace(" Use only when the user or another skill names it.", "")],
-  ["stale-pending", "pstack/skills/poteto-mode/scripts/worktree-audit.sh", (s) => s.replaceAll("origin/main", "origin/HEAD")],
+  ["cursor-subagent", "pstack/agents/poteto-agent.md", (s) => s + "\nUse the Task tool for every review.\n"],
+  ["cursor-subagent", "pstack/skills/swarm/SKILL.md", (s) => s + '\nSpawn workers with environment: "cloud".\n'],
+  ["cursor-subagent", "pstack/skills/swarm/SKILL.md", (s) => s + "\nPass run_in_background so it notifies you.\n"],
+  ["cursor-install", "pstack/agents/poteto-agent.md", (s) => s + "\nSearch ~/.cursor/plugins/ for poteto-mode.\n"],
+  ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n```json\n{"target": {\n  "providerInstanceId": "claudeAgent",\n  "model": "claude-opus-5-5",\n  "options": {"effort": "high", "fastMode": true}\n}}\n```\n'],
+  ["named-only", "pstack/skills/why/SKILL.md", (s) => s.replace("names it.", "names it. Apply it to all code tasks.")],
 ];
+
+const firstPending = readFileSync(script, "utf-8").match(/\{ rule: "[^"]+", file: "([^"]+)"/)?.[1];
+if (firstPending) regressions.push(["stale-pending", firstPending, () => ""]);
+
+const accepted = [
+  ["a folded description with a blank line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: >-\n  Explain why.\n\n  Use only when the user or another skill names it.")],
+  ["disable-model-invocation: false", "pstack/skills/how/SKILL.md", (s) => s.replace("---\n", "---\ndisable-model-invocation: false\n")],
+];
+
+for (const [name, file, change] of accepted) {
+  test(`${name} passes`, () => {
+    const root = copyTree();
+    edit(root, file, change);
+    const { code, out } = check(root);
+    assert.equal(code, 0, out);
+  });
+}
 
 for (const [rule, file, change] of regressions) {
   test(`a planted ${rule} regression fails`, () => {
