@@ -63,6 +63,11 @@ const BANNED = [
     fix: "Effort only goes down from the role line, and urgency does not change it. See the Effort row.",
   },
   {
+    id: "cursor-visuals",
+    pattern: /\/visualize\b/g,
+    fix: "Draw charts and diagrams on a self-contained HTML page, check it with html_preview, and publish it with html_render.",
+  },
+  {
     id: "hidden-skill",
     pattern: /^disable-model-invocation:\s*true\b/g,
     fix: "Keep skills visible. End the description with \"Use only when the user or another skill names it.\"",
@@ -89,6 +94,7 @@ const REQUIRED = [
   ["pstack/skills/setup-pstack/SKILL.md", "~/lim-v2/AGENTS.md", "setup-pstack writes the role file."],
   ["pstack/skills/setup-pstack/SKILL.md", "Claude fast mode", "setup-pstack never writes Claude fast mode."],
   ["pstack/skills/poteto-mode/playbooks/babysit.md", "watch_pull_request", "Babysit wakes on T3's PR watch."],
+  ["pstack/skills/ketchup/SKILL.md", "html_render", "/ketchup publishes its diagrams with T3's html_render."],
   ["pstack/skills/poteto-mode/scripts/check-plan.mjs", "show origin/lim:", "Plans re-read playbooks from origin/lim."],
 ];
 
