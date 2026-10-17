@@ -9,6 +9,8 @@ set -euo pipefail
 
 # Replace refs and grafts can make one commit read as another.
 export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
+# An inherited object store override could serve different objects than the repo holds.
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 base=$(git rev-parse --verify --quiet "$1^{commit}") || { echo "error: not a commit: $1" >&2; exit 1; }
 head=$(git rev-parse --verify --quiet "$2^{commit}") || { echo "error: not a commit: $2" >&2; exit 1; }
