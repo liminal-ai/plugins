@@ -93,7 +93,6 @@ const PENDING = [
   { rule: "graphite", file: "pstack/skills/poteto-mode/playbooks/orchestrate.md", count: 3, until: "sync PR C" },
   { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/store.ts", count: 11, until: "sync PR C" },
   { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/orch.test.ts", count: 1, until: "sync PR C" },
-  { rule: "trunk-main", file: "pstack/skills/poteto-mode/scripts/worktree-audit.sh", count: 3, until: "sync PR B" },
   { rule: "trunk-main", file: "pstack/skills/poteto-mode/playbooks/autopilot-full.md", count: 2, until: "sync PR C" },
   { rule: "cursor-subagent", file: "pstack/agents/poteto-agent.md", count: 1, until: "sync PR B" },
 ];
