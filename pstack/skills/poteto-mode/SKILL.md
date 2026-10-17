@@ -32,7 +32,7 @@ Remaining triggers:
 
 ## Principles
 
-Read the leaf skill in full for any principle you apply. Each entry names when it applies. Each leaf is the **principle-<title>** skill, with the title in kebab case, hyphens kept and other punctuation dropped, unless the entry gives its name.
+Read the leaf skill in full for any principle you apply. Each entry names when it applies. Each leaf is the **principle-<title>** skill, with the title in kebab case, hyphens kept and other punctuation dropped, unless the entry gives its name. Every skill this file names is at `~/.agents/skills/<name>/SKILL.md`, so put that path in a brief for a child that has no skill tool.
 
 **Core**
 
@@ -85,7 +85,7 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 
 ## Subagents
 
-**Make any subagent you spawn inside a playbook step a `poteto-agent` delegate** (code-writing delegates, ad-hoc helpers). Its brief starts by telling it to read `~/.agents/skills/poteto-mode/SKILL.md` in full, including its inline Principles index, as `~/.agents/agents/poteto-agent.md` says. `/poteto-mode` and `poteto-agent` route through the same wrapper. Routed workflow skills (`how`, `why`, `interrogate`, `reflect`, `swarm`) write their own briefs for diverse-model review. Respect what the skill prescribes, don't override to `poteto-agent`.
+**Make any subagent you spawn inside a playbook step a `poteto-agent` delegate** (code-writing delegates, ad-hoc helpers). Its brief starts by telling it to read `~/.agents/skills/poteto-mode/SKILL.md` in full, including its inline Principles index, as `~/.agents/agents/poteto-agent.md` says. The chat that receives `/poteto-mode` runs the playbook. Never spawn a `poteto-agent` to run the playbook itself. Routed workflow skills (`how`, `why`, `interrogate`, `reflect`, `swarm`) write their own briefs for diverse-model review. Respect what the skill prescribes, don't override to `poteto-agent`.
 
 **Every subagent is a T3 `delegate_task` child** with the role's provider instance, model and effort. A failed or crashed child is reported to you and wakes you. Each brief carries the full task, the files to read, and the expected result. The child's final message is its result. An async child's completion wakes you, and `task_status` returns its result. A child's task ends when its turn ends with none of its own `delegate_task` children still running. Those children's completions wake it, and nothing else does (a subagent can't watch a PR), so every brief tells the child never to end its turn to wait on anything else. A child shares your worktree and branch, uncommitted edits included. Read-only text helpers and one implementation agent work in your checkout, and you and that agent don't write at the same time. A helper that checks out a SHA, builds, or starts the app (Shipping verifiers on base vs head, swarm lanes, arena runners, hillclimb parallel attempts) gets its own path in its brief. It runs `git worktree add <path> <your committed SHA>`, works there by absolute path, and removes that worktree when done. A helper whose output is code commits it there and reports the commit SHA before it removes the worktree. Anything else it hands back (a rationale, a report, a non-code artifact) goes to an output dir outside the worktree that its brief names.
 
