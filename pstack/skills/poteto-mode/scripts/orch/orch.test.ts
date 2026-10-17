@@ -612,6 +612,30 @@ describe("Store", () => {
     });
   });
 
+  it("refuses a trunk checkout and leaves the saved frontier untouched", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeForge({
+      directory,
+      forge: "gh",
+      operation: async () => {
+        await store.frontier.set({ repo: stack.repo });
+        const saved = await readFile(join(directory, "frontier.json"));
+        git({ repo: stack.repo, args: ["checkout", "main"] });
+
+        const attempt = store.frontier.set({ repo: stack.repo });
+        await expect(attempt).rejects.toBeInstanceOf(UserError);
+        await expect(attempt).rejects.toThrow(
+          "current branch main is the trunk; checkout a stack branch with an open pull request"
+        );
+        expect(await readFile(join(directory, "frontier.json"))).toEqual(
+          saved
+        );
+      },
+    });
+  });
+
   // Behaves like gh pr list: filters by --head or --base and by --state, and
   // returns 30 rows unless --limit says otherwise.
   async function withPagingGh<T>({
