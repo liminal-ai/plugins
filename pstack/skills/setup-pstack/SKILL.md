@@ -34,6 +34,8 @@ The default role-to-model mapping is the block shape shown in step 5 below. If t
 
 Every real entry written must be in the detected set: its provider instance, its model, and each option value. `inherit-parent` and `auto` always pass. If a chosen real entry is not available, stop and ask again.
 
+Never write Claude fast mode (`fastMode=true` on any Claude entry), even when the user picks it here. Claude fast mode is approved per task, in a session, per the Speed rule in poteto-mode's Subagents section, so a role line is the wrong place for it. Say so and write the entry without it. Grok entries keep `fastMode=true`, and GPT entries may carry `serviceTier=priority`.
+
 ### 5. Write the block
 
 Write the block into `~/lim-v2/AGENTS.md` only, with a `# budget` line with the chosen label and its target effort, and one line per role, using the same labels poteto-mode uses, then the `cloud workers` line. Replace the whole fenced block so re-runs stay idempotent. Leave the rest of the file as it is, including the notes under the block, and update a note only where it names a value you changed. Shape:
