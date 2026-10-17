@@ -53,8 +53,21 @@ const regressions = [
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + "\nconst target = {\n  providerInstanceId: 'claudeAgent', // } closes this object\n  options: { fastMode: true }\n};\n"],
 ];
 
-const firstPending = readFileSync(script, "utf-8").match(/\{ rule: "[^"]+", file: "([^"]+)"/)?.[1];
-if (firstPending) regressions.push(["stale-pending", firstPending, () => ""]);
+
+test("a PENDING entry with no match left fails as stale", () => {
+  const root = copyTree();
+  const planted = join(root, "check-t3-port.mjs");
+  writeFileSync(
+    planted,
+    readFileSync(script, "utf-8").replace(
+      "const PENDING = [",
+      'const PENDING = [\n  { rule: "graphite", file: "pstack/skills/why/SKILL.md", count: 1, until: "never" },',
+    ),
+  );
+  const run = spawnSync(process.execPath, [planted, root], { encoding: "utf-8" });
+  assert.equal(run.status, 1);
+  assert.match(run.stdout + run.stderr, /\[stale-pending\]/);
+});
 
 const accepted = [
   ["a folded description with a blank line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: >-\n  Explain why.\n\n  Use only when the user or another skill names it.")],

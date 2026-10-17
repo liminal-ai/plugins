@@ -90,7 +90,6 @@ const REQUIRED = [
 // matches allowed. More matches is new drift. Fewer means the count must come down,
 // and zero means the entry is stale. So the list shrinks to empty as the sync lands.
 const PENDING = [
-  { rule: "trunk-main", file: "pstack/skills/poteto-mode/playbooks/autopilot-full.md", count: 2, until: "sync PR C" },
 ];
 
 function walk(dir) {
