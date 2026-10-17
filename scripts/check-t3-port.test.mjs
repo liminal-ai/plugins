@@ -46,6 +46,9 @@ const regressions = [
   ["cursor-install", "pstack/agents/poteto-agent.md", (s) => s + "\nSearch ~/.cursor/plugins/ for poteto-mode.\n"],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n```json\n{"target": {\n  "providerInstanceId": "claudeAgent",\n  "model": "claude-opus-5-5",\n  "options": {"effort": "high", "fastMode": true}\n}}\n```\n'],
   ["named-only", "pstack/skills/why/SKILL.md", (s) => s.replace("names it.", "names it. Apply it to all code tasks.")],
+  ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"target":{"options":{"fastMode":true},"providerInstanceId":"claudeAgent","model":"claude-opus-5-5"}}\n'],
+  ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + "\nconst target = { providerInstanceId: 'claudeAgent', model: 'claude-opus-5-5', options: { fastMode: true } };\n"],
+  ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": [{"id": "effort", "value": "high"}, {"id": "fastMode", "value": true}]}\n'],
 ];
 
 const firstPending = readFileSync(script, "utf-8").match(/\{ rule: "[^"]+", file: "([^"]+)"/)?.[1];
@@ -54,6 +57,8 @@ if (firstPending) regressions.push(["stale-pending", firstPending, () => ""]);
 const accepted = [
   ["a folded description with a blank line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: >-\n  Explain why.\n\n  Use only when the user or another skill names it.")],
   ["disable-model-invocation: false", "pstack/skills/how/SKILL.md", (s) => s.replace("---\n", "---\ndisable-model-invocation: false\n")],
+  ["a plain description that continues on the next line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: Explain why.\n  Use only when the user or another skill names it.")],
+  ["a Claude target with fast mode off near prose about Grok", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": {"fastMode": false}}\nFor Grok use fastMode: true.\n'],
 ];
 
 for (const [name, file, change] of accepted) {

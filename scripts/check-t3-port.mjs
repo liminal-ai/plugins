@@ -64,8 +64,26 @@ const BANNED = [
   },
 ];
 
-// A structured T3 target can span lines, so this one runs over the whole file.
-const CLAUDE_FAST_TARGET = /providerInstanceId"?\s*:\s*"?claudeAgent\b(?:(?!providerInstanceId)[\s\S]){0,300}?"?fastMode"?\s*[:=]\s*true\b/g;
+// A structured T3 target can span lines and list its keys in any order, so these run
+// over the whole object that holds each claudeAgent provider.
+const CLAUDE_PROVIDER = /["']?providerInstanceId["']?\s*:\s*["']claudeAgent["']/g;
+const FAST_ON = /["']?fastMode["']?\s*[:=]\s*true\b|["']id["']\s*:\s*["']fastMode["']\s*,\s*["']value["']\s*:\s*true\b/;
+
+function enclosingObject(text, at) {
+  let depth = 0;
+  let start = -1;
+  for (let i = at; i >= 0; i--) {
+    if (text[i] === "}") depth++;
+    else if (text[i] === "{" && depth-- === 0) { start = i; break; }
+  }
+  if (start < 0) return "";
+  depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}" && --depth === 0) return text.slice(start, i + 1);
+  }
+  return "";
+}
 
 const NAMED_ONLY = "Use only when the user or another skill names it.";
 // These load from the user's own wording on purpose, so they skip the named-only ending.
@@ -109,13 +127,12 @@ function description(text) {
   const at = lines.findIndex((l) => /^description:/.test(l));
   if (at < 0) return "";
   const head = lines[at].replace(/^description:\s*/, "");
-  if (!/^[>|][-+]?$/.test(head)) return head.replace(/^(["'])(.*)\1$/, "$2").trim();
-  const body = [];
+  const body = /^[>|][-+]?$/.test(head) ? [] : [head];
   for (const line of lines.slice(at + 1)) {
     if (line.trim() && !/^\s/.test(line)) break;
     body.push(line.trim());
   }
-  return body.join(" ").replace(/\s+/g, " ").trim();
+  return body.join(" ").replace(/\s+/g, " ").trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim();
 }
 
 const failures = [];
@@ -135,7 +152,8 @@ for (const path of SCANNED.flatMap((d) => walk(join(root, d)))) {
       }
     });
   }
-  for (const m of text.matchAll(CLAUDE_FAST_TARGET)) {
+  for (const m of text.matchAll(CLAUDE_PROVIDER)) {
+    if (!FAST_ON.test(enclosingObject(text, m.index))) continue;
     const line = text.slice(0, m.index).split("\n").length;
     fail(`${file}:${line}`, "claude-fast-default", "Claude fast mode is never a default. Only the operator turns it on, for work they name.");
   }
