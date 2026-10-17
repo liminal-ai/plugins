@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: Cut AI tells from any writing. Must always apply. Use only when the user or another skill names it.
+description: Cut AI tells from any writing. Use only when the user or another skill names it.
 ---
 
 # Unslop
