@@ -90,9 +90,6 @@ const REQUIRED = [
 // matches allowed. More matches is new drift. Fewer means the count must come down,
 // and zero means the entry is stale. So the list shrinks to empty as the sync lands.
 const PENDING = [
-  { rule: "graphite", file: "pstack/skills/poteto-mode/playbooks/orchestrate.md", count: 3, until: "sync PR C" },
-  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/store.ts", count: 11, until: "sync PR C" },
-  { rule: "graphite", file: "pstack/skills/poteto-mode/scripts/orch/orch.test.ts", count: 1, until: "sync PR C" },
   { rule: "trunk-main", file: "pstack/skills/poteto-mode/playbooks/autopilot-full.md", count: 2, until: "sync PR C" },
 ];
 

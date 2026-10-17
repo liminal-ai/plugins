@@ -169,12 +169,10 @@ export interface ResolveGateParams {
   readonly answer: string;
 }
 
-export type FrontierSource = "gt" | "gh";
-
 export interface SetFrontierParams {
   readonly repo: string;
+  readonly forge?: Forge;
   readonly prs?: readonly number[];
-  readonly source?: FrontierSource;
 }
 
 export interface AddStandingParams {
@@ -978,205 +976,56 @@ function countLine(value: Counts): string {
     : entries.map(([name, count]) => `${name}=${count}`).join(", ");
 }
 
-const OPEN_GT_PR_STATUSES = new Set([
-  "Trunk branch locked",
-  "Changes requested",
-  "Waiting on PRs in this stack to merge",
-  "Waiting on downstack merge state",
-  "Draft",
-  "Required checks failed",
-  "Undergoing failure detection",
-  "Merge queue failed on current head commit",
-  "Handed off to merge queue...",
-  "Waiting on downstack",
-  "Merge conflicts",
-  "Needs reviewers",
-  "Needs approvals",
-  "Needs restack",
-  "Queued to merge...",
-  "Ready to merge",
-  "Ready to merge as stack",
-  "Rebasing...",
-  "Waiting on CI...",
-  "Stale, needs rebase onto trunk",
-  "Unresolved comments",
-  "Waiting on required CI",
-  "Waiting to merge...",
-]);
+export type Forge = "gh" | "origin";
 
-interface GtPullRequest {
+interface ForgePullRequestQuery {
+  readonly stateField: string;
+  readonly headField: string;
+  readonly baseField: string;
+  readonly states: ReadonlyMap<string, FrontierPrState>;
+}
+
+const FORGE_PULL_REQUEST_QUERIES: Readonly<
+  Record<Forge, ForgePullRequestQuery>
+> = {
+  gh: {
+    stateField: "state",
+    headField: "headRefName",
+    baseField: "baseRefName",
+    states: new Map<string, FrontierPrState>([
+      ["OPEN", "OPEN"],
+      ["MERGED", "MERGED"],
+      ["CLOSED", "CLOSED"],
+    ]),
+  },
+  origin: {
+    stateField: "status",
+    headField: "headRef",
+    baseField: "baseRef",
+    states: new Map<string, FrontierPrState>([
+      ["open", "OPEN"],
+      ["draft", "OPEN"],
+      ["merged", "MERGED"],
+      ["closed", "CLOSED"],
+    ]),
+  },
+};
+
+export function parseForge(value: string): Forge {
+  if (value === "gh" || value === "origin") {
+    return value;
+  }
+  throw new UserError("forge must be gh or origin");
+}
+
+interface ForgePullRequest {
   readonly pr: number;
   readonly state: FrontierPrState;
+  readonly branch: string;
+  readonly base: string;
 }
 
-interface GtFrontierEntry extends GtPullRequest {
-  readonly branches: string;
-}
-
-function parseGtPullRequest({
-  branch,
-  detail,
-}: {
-  branch: string;
-  detail: string;
-}): GtPullRequest {
-  const match =
-    /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?(?: .+)?$/.exec(
-      detail
-    );
-  const pr = Number(match?.[1] ?? 0);
-  if (match === null || !Number.isSafeInteger(pr)) {
-    throw new UserError(
-      `gt info output has an invalid PR row for branch ${branch}: ${detail}`
-    );
-  }
-  const status = match[2];
-  if (status === "Merged") {
-    return { pr, state: "MERGED" };
-  }
-  if (status === "Closed") {
-    return { pr, state: "CLOSED" };
-  }
-  if (status === undefined || OPEN_GT_PR_STATUSES.has(status)) {
-    return { pr, state: "OPEN" };
-  }
-  throw new UserError(
-    `gt info output has an unknown PR state for branch ${branch}: ${status}`
-  );
-}
-
-function parseGtBranches(raw: string): readonly string[] {
-  const branches: string[] = [];
-  const lines = raw.replace(/\r/g, "").split("\n");
-  for (const [index, line] of lines.entries()) {
-    if (line.length === 0) {
-      continue;
-    }
-    const branchMatch =
-      /^(?:│ )*[◯◉] +([^\s]+)((?: \([^()\r\n]*\))*)$/.exec(line);
-    if (branchMatch === null) {
-      throw new UserError(
-        `gt log short output has an unparseable line ${index + 1}: ${JSON.stringify(line)}`
-      );
-    }
-    const branch = branchMatch[1] ?? "";
-    if (branches.includes(branch)) {
-      throw new UserError(
-        `gt log short output contains duplicate branch ${branch}`
-      );
-    }
-    branches.push(branch);
-  }
-  const trunk = branches[0];
-  if (trunk === undefined) {
-    throw new UserError("gt log short output did not contain a stack");
-  }
-  return branches.slice(1);
-}
-
-function graphitePullRequest({
-  branch,
-  repo,
-}: {
-  branch: string;
-  repo: string;
-}): GtPullRequest {
-  let raw: string;
-  try {
-    raw = execFileSync("gt", ["--no-interactive", "info", branch], {
-      cwd: repo,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (error) {
-    throw new UserError(
-      `gt info ${branch} failed: ${errorMessage(error)}`
-    );
-  }
-  const rows = raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .filter(
-      (line) =>
-        line.startsWith("PR #") || line.startsWith("[origin] PR #")
-    );
-  if (rows.length === 0) {
-    throw new UserError(
-      `gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`
-    );
-  }
-  if (rows.length > 1) {
-    throw new UserError(
-      `gt info output contains multiple PRs for branch ${branch}`
-    );
-  }
-  return parseGtPullRequest({ branch, detail: rows[0] ?? "" });
-}
-
-function graphiteFrontier(repo: string): readonly GtFrontierEntry[] {
-  let raw: string;
-  try {
-    raw = execFileSync(
-      "gt",
-      ["--no-interactive", "log", "short", "--stack", "--reverse"],
-      {
-        cwd: repo,
-        encoding: "utf8",
-        env: { ...process.env, NO_COLOR: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      }
-    );
-  } catch (error) {
-    throw new UserError(
-      `gt log short --stack --reverse failed: ${errorMessage(error)}`
-    );
-  }
-  const result = parseGtBranches(raw).map((branch) => ({
-    branches: branch,
-    ...graphitePullRequest({ branch, repo }),
-  }));
-  if (new Set(result.map((row) => row.pr)).size !== result.length) {
-    throw new UserError("gt info output contains duplicate pull requests");
-  }
-  return result;
-}
-
-function branchSha({
-  branch,
-  repo,
-}: {
-  branch: string;
-  repo: string;
-}): string {
-  let raw: string;
-  try {
-    raw = execFileSync("git", ["rev-parse", branch], {
-      cwd: repo,
-      encoding: "utf8",
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (error) {
-    throw new UserError(
-      `git rev-parse ${branch} failed: ${errorMessage(error)}`
-    );
-  }
-  const sha = raw.trim();
-  if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
-    throw new UserError(`git rev-parse ${branch} returned an invalid SHA`);
-  }
-  return sha;
-}
-
-interface GhPullRequest {
-  readonly number: number;
-  readonly headRefName: string;
-  readonly baseRefName: string;
-  readonly headRefOid: string;
-}
-
-function runInRepo({
+function runTool({
   command,
   args,
   repo,
@@ -1189,7 +1038,7 @@ function runInRepo({
     return execFileSync(command, args, {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
+      env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (error) {
@@ -1199,146 +1048,218 @@ function runInRepo({
   }
 }
 
-function parseGhPullRequests(raw: string): readonly GhPullRequest[] {
+function listPullRequests({
+  filter,
+  branch,
+  forge,
+  repo,
+}: {
+  filter: "--head" | "--base";
+  branch: string;
+  forge: Forge;
+  repo: string;
+}): readonly ForgePullRequest[] {
+  const query = FORGE_PULL_REQUEST_QUERIES[forge];
+  const command = `${forge} pr list ${filter} ${branch}`;
+  // Every state is fetched because a merged or closed PR still anchors the
+  // chain, and a draft counts as OPEN.
+  const raw = runTool({
+    command: forge,
+    args: [
+      "pr",
+      "list",
+      filter,
+      branch,
+      "--state",
+      "all",
+      "--json",
+      ["number", query.stateField, query.headField, query.baseField].join(
+        ","
+      ),
+    ],
+    repo,
+  });
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
-    throw new UserError("gh pr list output is not JSON");
+    throw new UserError(`${command} output is not valid JSON`);
   }
-  if (!Array.isArray(value)) {
-    throw new UserError("gh pr list output is not a list");
+  if (!isUnknownArray(value)) {
+    throw new UserError(`${command} output is not a JSON array`);
   }
-  return value.map((item: unknown) => {
-    const row = item as Partial<GhPullRequest> | null;
+  return value.map((row) => {
+    const status = isRecord(row) ? row[query.stateField] : undefined;
+    const state =
+      typeof status === "string" ? (query.states.get(status) ?? null) : null;
+    const head = isRecord(row) ? row[query.headField] : undefined;
+    const base = isRecord(row) ? row[query.baseField] : undefined;
     if (
-      row === null ||
-      typeof row !== "object" ||
+      !isRecord(row) ||
       typeof row.number !== "number" ||
-      typeof row.headRefName !== "string" ||
-      typeof row.baseRefName !== "string" ||
-      typeof row.headRefOid !== "string" ||
-      !/^[0-9a-f]{40,64}$/i.test(row.headRefOid)
+      !Number.isSafeInteger(row.number) ||
+      row.number < 1 ||
+      state === null ||
+      typeof head !== "string" ||
+      head.length === 0 ||
+      typeof base !== "string" ||
+      base.length === 0
     ) {
-      throw new UserError(
-        `gh pr list output has an invalid pull request: ${JSON.stringify(item)}`
-      );
+      throw new UserError(`${command} output has an invalid PR row`);
     }
-    return {
-      number: row.number,
-      headRefName: row.headRefName,
-      baseRefName: row.baseRefName,
-      headRefOid: row.headRefOid,
-    };
+    return { pr: row.number, state, branch: head, base };
   });
 }
 
-// The open pull requests that form the current branch's stack, bottom to top.
-// A plain pull request to trunk is a one-PR stack.
-function githubFrontier(repo: string): readonly FrontierPr[] {
-  const current = runInRepo({
-    command: "git",
-    args: ["rev-parse", "--abbrev-ref", "HEAD"],
-    repo,
-  }).trim();
-  const trunk = runInRepo({
-    command: "gh",
-    args: ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
-    repo,
-  }).trim();
-  const open = parseGhPullRequests(
-    runInRepo({
-      command: "gh",
-      args: [
-        "pr",
-        "list",
-        "--state",
-        "open",
-        "--limit",
-        "1000",
-        "--json",
-        "number,headRefName,baseRefName,headRefOid",
-      ],
-      repo,
-    })
-  );
-  const byHead = new Map<string, GhPullRequest>();
-  for (const pr of open) {
-    if (byHead.has(pr.headRefName)) {
-      throw new UserError(
-        `gh pr list output has two open pull requests for branch ${pr.headRefName}`
-      );
-    }
-    byHead.set(pr.headRefName, pr);
-  }
-  const start = byHead.get(current);
-  if (start === undefined) {
+function branchPullRequest({
+  branch,
+  forge,
+  repo,
+}: {
+  branch: string;
+  forge: Forge;
+  repo: string;
+}): ForgePullRequest {
+  const rows = listPullRequests({ filter: "--head", branch, forge, repo });
+  const row = rows[0];
+  if (row === undefined) {
     throw new UserError(
-      `branch ${current} has no open pull request; check out a branch of the stack`
+      `branch ${branch} has no pull request; open one with ${forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`
     );
   }
-  const chain: GhPullRequest[] = [start];
-  for (let base = start.baseRefName; base !== trunk; ) {
-    const parent = byHead.get(base);
-    if (parent === undefined) {
-      throw new UserError(
-        `#${chain[0]?.number} is based on ${base}, which has no open pull request; restack it onto ${trunk} first`
-      );
-    }
-    if (chain.includes(parent)) {
-      throw new UserError(`pull request bases form a cycle at #${parent.number}`);
-    }
-    chain.unshift(parent);
-    base = parent.baseRefName;
+  if (rows.length > 1) {
+    throw new UserError(
+      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); close the stale ones first`
+    );
   }
-  for (let top = start; ; ) {
-    const children = open.filter((pr) => pr.baseRefName === top.headRefName);
-    if (children.length === 0) {
-      break;
-    }
-    const [child] = children;
-    if (children.length > 1 || child === undefined) {
-      throw new UserError(
-        `#${top.number} has more than one child pull request (${children
-          .map((pr) => `#${pr.number}`)
-          .join(",")}); the frontier needs one linear stack`
-      );
-    }
-    if (chain.includes(child)) {
-      throw new UserError(`pull request bases form a cycle at #${child.number}`);
-    }
-    chain.push(child);
-    top = child;
-  }
-  return chain.map((pr) => ({
-    pr: pr.number,
-    branches: pr.headRefName,
-    sha: pr.headRefOid,
-    state: "OPEN",
-  }));
+  return row;
 }
 
-function resolveFrontier(
-  repo: string,
-  source: FrontierSource
-): readonly FrontierPr[] {
-  if (source === "gh") {
-    return githubFrontier(repo);
+function openChildren({
+  branch,
+  forge,
+  repo,
+}: {
+  branch: string;
+  forge: Forge;
+  repo: string;
+}): readonly ForgePullRequest[] {
+  return listPullRequests({ filter: "--base", branch, forge, repo }).filter(
+    (row) => row.state === "OPEN"
+  );
+}
+
+function runGit({
+  args,
+  repo,
+}: {
+  args: readonly string[];
+  repo: string;
+}): string {
+  return runTool({ command: "git", args, repo }).trim();
+}
+
+function branchSha({
+  branch,
+  repo,
+}: {
+  branch: string;
+  repo: string;
+}): string {
+  const sha = runGit({ args: ["rev-parse", branch], repo });
+  if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
+    throw new UserError(`git rev-parse ${branch} returned an invalid SHA`);
   }
-  return graphiteFrontier(repo).map((row) => ({
-    ...row,
-    sha: branchSha({ branch: row.branches, repo }),
+  return sha;
+}
+
+function currentBranch(repo: string): string {
+  return runGit({ args: ["symbolic-ref", "--short", "HEAD"], repo });
+}
+
+// The remote's own HEAD wins over the clone's origin/HEAD, which goes stale
+// when a repository's default branch changes after the clone.
+function trunkBranch(repo: string): string {
+  try {
+    const remote = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(
+      runGit({ args: ["ls-remote", "--symref", "origin", "HEAD"], repo })
+    );
+    if (remote?.[1] !== undefined) {
+      return remote[1];
+    }
+  } catch {
+    // No reachable origin. Fall through to the local refs.
+  }
+  try {
+    return runGit({
+      args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      repo,
+    }).replace(/^origin\//, "");
+  } catch {
+    // Init-plus-fetch checkouts and local fixtures lack origin/HEAD.
+    return "main";
+  }
+}
+
+function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
+  const trunk = trunkBranch(repo);
+  const current = currentBranch(repo);
+  if (current === trunk) {
+    return [];
+  }
+  const seen = new Set([current]);
+  let bottom = branchPullRequest({ branch: current, forge, repo });
+  const chain = [bottom];
+  while (bottom.base !== trunk) {
+    if (seen.has(bottom.base)) {
+      throw new UserError(
+        `pull request base chain loops at branch ${bottom.base}`
+      );
+    }
+    seen.add(bottom.base);
+    bottom = branchPullRequest({ branch: bottom.base, forge, repo });
+    chain.unshift(bottom);
+  }
+  let tip = current;
+  for (;;) {
+    const children = openChildren({ branch: tip, forge, repo });
+    const child = children[0];
+    if (child === undefined) {
+      break;
+    }
+    if (children.length > 1) {
+      throw new UserError(
+        `stack is not linear: branches ${children.map((row) => row.branch).join(", ")} all target ${tip}`
+      );
+    }
+    if (seen.has(child.branch)) {
+      throw new UserError(
+        `pull request base chain loops at branch ${child.branch}`
+      );
+    }
+    seen.add(child.branch);
+    chain.push(child);
+    tip = child.branch;
+  }
+  if (new Set(chain.map((row) => row.pr)).size !== chain.length) {
+    throw new UserError(
+      "pull request base chain contains duplicate pull requests"
+    );
+  }
+  return chain.map((row) => ({
+    pr: row.pr,
+    branches: row.branch,
+    sha: branchSha({ branch: row.branch, repo }),
+    state: row.state,
   }));
 }
 
 function validateFrontierPin({
   actual,
   expected,
-  source,
 }: {
   actual: readonly number[];
   expected: readonly number[];
-  source: FrontierSource;
 }): void {
   if (
     actual.length === expected.length &&
@@ -1352,14 +1273,14 @@ function validateFrontierPin({
   const extra = actual.filter((pr) => !expectedSet.has(pr));
   const drift: string[] = [];
   if (missing.length > 0) {
-    drift.push(`missing from ${source}: ${missing.join(",")}`);
+    drift.push(`missing from resolved chain: ${missing.join(",")}`);
   }
   if (extra.length > 0) {
-    drift.push(`extra in ${source}: ${extra.join(",")}`);
+    drift.push(`extra in resolved chain: ${extra.join(",")}`);
   }
   if (missing.length === 0 && extra.length === 0) {
     drift.push(
-      `order differs: expected ${expected.join(",")}; ${source} ${actual.join(",")}`
+      `order differs: expected ${expected.join(",")}; resolved ${actual.join(",")}`
     );
   }
   throw new UserError(`frontier pin mismatch: ${drift.join("; ")}`);
@@ -1662,6 +1583,7 @@ export function openStore(
       set: async (params) => {
         await beginWrite();
         const repo = resolve(requiredLine(params.repo, "repo directory"));
+        const forge = parseForge(params.forge ?? "gh");
         const pin =
           params.prs === undefined
             ? undefined
@@ -1670,13 +1592,11 @@ export function openStore(
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const source = params.source ?? "gt";
-        const prs = resolveFrontier(repo, source);
+        const prs = resolveFrontier(repo, forge);
         if (pin !== undefined) {
           validateFrontierPin({
             actual: prs.map((row) => row.pr),
             expected: pin,
-            source,
           });
         }
         const value: Frontier = {

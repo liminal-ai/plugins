@@ -16,6 +16,7 @@ import {
   UserError,
   openStore,
   parseVerdict,
+  type Forge,
   type OpenStoreOptions,
   type Store,
 } from "./store.ts";
@@ -76,6 +77,7 @@ async function makeGitStack(directory: string): Promise<{
   readonly mergedSha: string;
   readonly closedSha: string;
   readonly openSha: string;
+  readonly draftSha: string;
 }> {
   const repo = join(directory, "repo");
   await mkdir(repo);
@@ -86,116 +88,149 @@ async function makeGitStack(directory: string): Promise<{
   git({ repo, args: ["add", "."] });
   git({ repo, args: ["commit", "-m", "main"] });
 
-  const branches = ["stack/merged", "stack/closed", "stack/open"];
+  const branches = [
+    "stack/merged",
+    "stack/closed",
+    "stack/open",
+    "stack/draft",
+  ];
   for (const [index, branch] of branches.entries()) {
     git({ repo, args: ["checkout", "-b", branch] });
     await writeFile(join(repo, `stack-${index}.txt`), `${branch}\n`);
     git({ repo, args: ["add", "."] });
     git({ repo, args: ["commit", "-m", branch] });
   }
+  git({ repo, args: ["checkout", "stack/open"] });
 
   return {
     repo,
     mergedSha: git({ repo, args: ["rev-parse", "stack/merged"] }),
     closedSha: git({ repo, args: ["rev-parse", "stack/closed"] }),
     openSha: git({ repo, args: ["rev-parse", "stack/open"] }),
+    draftSha: git({ repo, args: ["rev-parse", "stack/draft"] }),
   };
 }
 
-async function withFakeGt<T>({
-  directory,
-  operation,
-  output,
-}: {
-  directory: string;
-  operation: (outputPath: string) => Promise<T>;
-  output: string;
-}): Promise<T> {
-  const bin = join(directory, "bin");
-  const outputPath = join(directory, "gt-output.txt");
-  await mkdir(bin);
-  await writeFile(outputPath, output);
-  const gt = join(bin, "gt");
-  await writeFile(
-    gt,
-    `#!/usr/bin/env bash
-set -euo pipefail
-if [ "$(pwd -P)" != "${realpathSync(join(directory, "repo"))}" ]; then
-  printf 'gt ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
-  exit 2
-fi
-case "$*" in
-  "--no-interactive log short --stack --reverse")
-    cat "${outputPath}"
-    ;;
-  "--no-interactive info stack/merged")
-    printf 'stack/merged\\nPR #10 (Merged) merged change\\n'
-    ;;
-  "--no-interactive info stack/closed")
-    printf 'stack/closed\\nPR #13 (Closed) closed change\\n'
-    ;;
-  "--no-interactive info stack/open")
-    printf 'stack/open\\nPR #11 (Needs approvals) open change\\n'
-    ;;
-  *)
-    printf 'unexpected gt arguments: %s\\n' "$*" >&2
-    exit 2
-    ;;
-esac
-`
-  );
-  await chmod(gt, 0o755);
+type FixtureState = "open" | "draft" | "merged" | "closed";
 
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${bin}:${originalPath ?? ""}`;
-  try {
-    return await operation(outputPath);
-  } finally {
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
+const FORGE_FIXTURES: Readonly<
+  Record<
+    Forge,
+    {
+      readonly fields: string;
+      readonly row: (pr: {
+        number: number;
+        state: FixtureState;
+        head: string;
+        base: string;
+      }) => Record<string, unknown>;
     }
-  }
+  >
+> = {
+  gh: {
+    fields: "number,state,headRefName,baseRefName",
+    row: ({ number, state, head, base }) => ({
+      number,
+      state: state === "draft" ? "OPEN" : state.toUpperCase(),
+      headRefName: head,
+      baseRefName: base,
+    }),
+  },
+  origin: {
+    fields: "number,status,headRef,baseRef",
+    row: ({ number, state, head, base }) => ({
+      number,
+      status: state,
+      headRef: head,
+      baseRef: base,
+    }),
+  },
+};
+
+function forgeRows(
+  forge: Forge,
+  prs: readonly {
+    number: number;
+    state: FixtureState;
+    head: string;
+    base: string;
+  }[]
+): string {
+  return JSON.stringify(prs.map((pr) => FORGE_FIXTURES[forge].row(pr)));
 }
 
-async function withFakeGh<T>({
+async function withFakeForge<T>({
   directory,
+  forge,
   operation,
-  pullRequests,
+  currentRows,
 }: {
   directory: string;
+  forge: Forge;
   operation: () => Promise<T>;
-  pullRequests: unknown;
+  currentRows?: string;
 }): Promise<T> {
-  const bin = join(directory, "gh-bin");
-  const listPath = join(directory, "gh-pr-list.json");
-  await mkdir(bin);
-  await writeFile(listPath, JSON.stringify(pullRequests));
-  const gh = join(bin, "gh");
+  const bin = join(directory, "bin");
+  const outputPath = join(directory, "forge-output.txt");
+  await mkdir(bin, { recursive: true });
   await writeFile(
-    gh,
+    outputPath,
+    `${
+      currentRows ??
+      forgeRows(forge, [
+        {
+          number: 11,
+          state: "open",
+          head: "stack/open",
+          base: "stack/closed",
+        },
+      ])
+    }\n`
+  );
+  const { fields } = FORGE_FIXTURES[forge];
+  const list = (filter: string, branch: string): string =>
+    `pr list ${filter} ${branch} --state all --json ${fields}`;
+  const fake = join(bin, forge);
+  await writeFile(
+    fake,
     `#!/usr/bin/env bash
 set -euo pipefail
 if [ "$(pwd -P)" != "${realpathSync(join(directory, "repo"))}" ]; then
-  printf 'gh ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
+  printf '${forge} ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
   exit 2
 fi
 case "$*" in
-  "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
-    printf 'main\\n'
+  "${list("--head", "stack/open")}")
+    cat "${outputPath}"
     ;;
-  "pr list --state open --limit 1000 --json number,headRefName,baseRefName,headRefOid")
-    cat "${listPath}"
+  "${list("--head", "stack/closed")}")
+    printf '%s\\n' '${forgeRows(forge, [{ number: 13, state: "closed", head: "stack/closed", base: "stack/merged" }])}'
+    ;;
+  "${list("--head", "stack/merged")}")
+    printf '%s\\n' '${forgeRows(forge, [{ number: 10, state: "merged", head: "stack/merged", base: "main" }])}'
+    ;;
+  "${list("--base", "stack/open")}")
+    printf '%s\\n' '${forgeRows(forge, [
+      { number: 14, state: "draft", head: "stack/draft", base: "stack/open" },
+      {
+        number: 15,
+        state: "closed",
+        head: "stack/abandoned",
+        base: "stack/open",
+      },
+    ])}'
+    ;;
+  "${list("--base", "stack/draft")}")
+    printf '[]\\n'
     ;;
   *)
-    printf 'unexpected gh arguments: %s\\n' "$*" >&2
+    printf 'unexpected ${forge} arguments: %s\\n' "$*" >&2
     exit 2
     ;;
 esac
 `
   );
-  await chmod(gh, 0o755);
+  await chmod(fake, 0o755);
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${bin}:${originalPath ?? ""}`;
@@ -461,192 +496,117 @@ describe("Store", () => {
     ]);
   });
 
-  it("resolves the ordered Graphite frontier and validates an optional pin", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-    const output = `◯ main
-◯ stack/merged
-◯ stack/closed
-◉ stack/open (current)
-`;
+  for (const forge of ["gh", "origin"] as const) {
+    it(`resolves the ordered frontier from the ${forge} base chain and validates an optional pin`, async () => {
+      const { directory, store } = await initializedStore();
+      const stack = await makeGitStack(directory);
+      const forgeParams = forge === "gh" ? {} : { forge };
 
-    await withFakeGt({
-      directory,
-      output,
-      operation: async () => {
-        expect(await store.frontier.set({ repo: stack.repo })).toEqual({
-          generation: 1,
-          prs: [
-            {
-              pr: 10,
-              branches: "stack/merged",
-              sha: stack.mergedSha,
-              state: "MERGED",
-            },
-            {
-              pr: 13,
-              branches: "stack/closed",
-              sha: stack.closedSha,
-              state: "CLOSED",
-            },
-            {
-              pr: 11,
-              branches: "stack/open",
-              sha: stack.openSha,
-              state: "OPEN",
-            },
-          ],
-          lowestUnmerged: 11,
-        });
-        expect(
-          (
-            await store.frontier.set({
+      await withFakeForge({
+        directory,
+        forge,
+        operation: async () => {
+          expect(
+            await store.frontier.set({ repo: stack.repo, ...forgeParams })
+          ).toEqual({
+            generation: 1,
+            prs: [
+              {
+                pr: 10,
+                branches: "stack/merged",
+                sha: stack.mergedSha,
+                state: "MERGED",
+              },
+              {
+                pr: 13,
+                branches: "stack/closed",
+                sha: stack.closedSha,
+                state: "CLOSED",
+              },
+              {
+                pr: 11,
+                branches: "stack/open",
+                sha: stack.openSha,
+                state: "OPEN",
+              },
+              {
+                pr: 14,
+                branches: "stack/draft",
+                sha: stack.draftSha,
+                state: "OPEN",
+              },
+            ],
+            lowestUnmerged: 11,
+          });
+          expect(
+            (
+              await store.frontier.set({
+                repo: stack.repo,
+                ...forgeParams,
+                prs: [10, 13, 11, 14],
+              })
+            ).generation
+          ).toBe(2);
+          expect((await store.frontier.show()).generation).toBe(2);
+          await expect(
+            store.frontier.set({
               repo: stack.repo,
-              prs: [10, 13, 11],
+              ...forgeParams,
+              prs: [10, 11, 12],
             })
-          ).generation
-        ).toBe(2);
-        expect((await store.frontier.show()).generation).toBe(2);
-        await expect(
-          store.frontier.set({
-            repo: stack.repo,
-            prs: [10, 11, 12],
-          })
-        ).rejects.toThrow(
-          "frontier pin mismatch: missing from gt: 12; extra in gt: 13"
-        );
-        await expect(
-          store.frontier.set({
-            repo: stack.repo,
-            prs: [13, 10, 11],
-          })
-        ).rejects.toThrow(
-          "frontier pin mismatch: order differs: expected 13,10,11; gt 10,13,11"
-        );
-        await expect(
-          store.frontier.set({
-            repo: stack.repo,
-            prs: [10, 10],
-          })
-        ).rejects.toThrow("--prs must not contain duplicates");
-      },
-    });
-  });
-
-  it("resolves the current branch's stack from open pull requests", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-    const pr = (number: number, head: string, base: string, sha: string) => ({
-      number,
-      headRefName: head,
-      baseRefName: base,
-      headRefOid: sha,
+          ).rejects.toThrow(
+            "frontier pin mismatch: missing from resolved chain: 12; extra in resolved chain: 13,14"
+          );
+          await expect(
+            store.frontier.set({
+              repo: stack.repo,
+              ...forgeParams,
+              prs: [13, 10, 11, 14],
+            })
+          ).rejects.toThrow(
+            "frontier pin mismatch: order differs: expected 13,10,11,14; resolved 10,13,11,14"
+          );
+          await expect(
+            store.frontier.set({
+              repo: stack.repo,
+              ...forgeParams,
+              prs: [10, 10],
+            })
+          ).rejects.toThrow("--prs must not contain duplicates");
+        },
+      });
     });
 
-    await withFakeGh({
-      directory,
-      pullRequests: [
-        pr(30, "other/plain", "main", stack.mergedSha),
-        pr(22, "stack/open", "stack/closed", stack.openSha),
-        pr(20, "stack/merged", "main", stack.mergedSha),
-        pr(21, "stack/closed", "stack/merged", stack.closedSha),
-      ],
-      operation: async () => {
-        expect(
-          await store.frontier.set({ repo: stack.repo, source: "gh" })
-        ).toEqual({
-          generation: 1,
-          prs: [
-            { pr: 20, branches: "stack/merged", sha: stack.mergedSha, state: "OPEN" },
-            { pr: 21, branches: "stack/closed", sha: stack.closedSha, state: "OPEN" },
-            { pr: 22, branches: "stack/open", sha: stack.openSha, state: "OPEN" },
-          ],
-          lowestUnmerged: 20,
-        });
-        await expect(
-          store.frontier.set({ repo: stack.repo, source: "gh", prs: [20, 22] })
-        ).rejects.toThrow("frontier pin mismatch: extra in gh: 21");
-      },
-    });
-  });
+    it(`rejects unparseable ${forge} output loudly`, async () => {
+      const { directory, store } = await initializedStore();
+      const stack = await makeGitStack(directory);
 
-  it("treats a plain pull request to trunk as a one-PR stack", async () => {
+      await withFakeForge({
+        directory,
+        forge,
+        currentRows: "this line is not forge output",
+        operation: async () => {
+          await expect(
+            store.frontier.set({ repo: stack.repo, forge })
+          ).rejects.toThrow(
+            `${forge} pr list --head stack/open output is not valid JSON`
+          );
+        },
+      });
+    });
+  }
+
+  it("names the missing pull request when a chain branch has none", async () => {
     const { directory, store } = await initializedStore();
     const stack = await makeGitStack(directory);
 
-    await withFakeGh({
+    await withFakeForge({
       directory,
-      pullRequests: [
-        { number: 22, headRefName: "stack/open", baseRefName: "main", headRefOid: stack.openSha },
-      ],
+      forge: "gh",
+      currentRows: "[]",
       operation: async () => {
-        expect(
-          (await store.frontier.set({ repo: stack.repo, source: "gh" })).prs
-        ).toEqual([
-          { pr: 22, branches: "stack/open", sha: stack.openSha, state: "OPEN" },
-        ]);
-      },
-    });
-  });
-
-  it("refuses a stack it cannot resolve from open pull requests", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-    const open = { number: 22, headRefName: "stack/open", baseRefName: "stack/closed", headRefOid: stack.openSha };
-
-    await withFakeGh({
-      directory,
-      pullRequests: [open],
-      operation: async () => {
-        await expect(
-          store.frontier.set({ repo: stack.repo, source: "gh" })
-        ).rejects.toThrow(
-          "#22 is based on stack/closed, which has no open pull request; restack it onto main first"
-        );
-      },
-    });
-    await rm(join(directory, "gh-bin"), { recursive: true });
-    await withFakeGh({
-      directory,
-      pullRequests: [
-        { ...open, baseRefName: "main" },
-        { number: 24, headRefName: "top/a", baseRefName: "stack/open", headRefOid: stack.openSha },
-        { number: 25, headRefName: "top/b", baseRefName: "stack/open", headRefOid: stack.openSha },
-      ],
-      operation: async () => {
-        await expect(
-          store.frontier.set({ repo: stack.repo, source: "gh" })
-        ).rejects.toThrow(
-          "#22 has more than one child pull request (#24,#25); the frontier needs one linear stack"
-        );
-      },
-    });
-    await rm(join(directory, "gh-bin"), { recursive: true });
-    await withFakeGh({
-      directory,
-      pullRequests: [],
-      operation: async () => {
-        await expect(
-          store.frontier.set({ repo: stack.repo, source: "gh" })
-        ).rejects.toThrow(
-          "branch stack/open has no open pull request; check out a branch of the stack"
-        );
-      },
-    });
-  });
-
-  it("rejects unparseable Graphite output loudly", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-
-    await withFakeGt({
-      directory,
-      output: "◯ main\nthis line is not Graphite output\n",
-      operation: async () => {
-        await expect(
-          store.frontier.set({ repo: stack.repo })
-        ).rejects.toThrow(
-          'gt log short output has an unparseable line 2: "this line is not Graphite output"'
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          "branch stack/open has no pull request; open one with gh pr create"
         );
       },
     });
@@ -705,13 +665,26 @@ describe("orch CLI", () => {
     const frontierHelp = runCli(["frontier", "set", "--help"]);
     expect(frontierHelp.code).toBe(0);
     expect(frontierHelp.stdout).toContain("--repo <dir>");
+    expect(frontierHelp.stdout).toContain("--forge <forge>");
     expect(frontierHelp.stdout).toContain("--prs <n,...>");
-    expect(frontierHelp.stdout).toContain("--source <source>");
 
     const directory = await makeDirectory();
     const invalid = runCli(["--store", directory, "unit", "add", "u1"]);
     expect(invalid.code).toBe(1);
     expect(invalid.stderr).toContain("required option '--track <track>'");
+
+    const badForge = runCli([
+      "--store",
+      directory,
+      "frontier",
+      "set",
+      "--repo",
+      directory,
+      "--forge",
+      "gt",
+    ]);
+    expect(badForge.code).toBe(1);
+    expect(badForge.stderr).toContain("Allowed choices are gh, origin");
   });
 
   it("accepts ORCH_STORE and emits complete JSON", async () => {
