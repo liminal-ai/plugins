@@ -51,6 +51,10 @@ const regressions = [
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": [{"id": "effort", "value": "high"}, {"id": "fastMode", "value": true}]}\n'],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId":"claudeAgent","options":[{"value":true,"id":"fastMode"}]}\n'],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + "\nconst target = {\n  providerInstanceId: 'claudeAgent', // } closes this object\n  options: { fastMode: true }\n};\n"],
+  ["effort-raise", "pstack/skills/poteto-mode/SKILL.md", (s) => s + "\nRaise it one step for a hard job.\n"],
+  ["effort-raise", "pstack/skills/swarm/SKILL.md", (s) => s + "\nA lane may go up to max.\n"],
+  ["effort-raise", "pstack/skills/arena/SKILL.md", (s) => s + "\nUse the fast slug when the job is urgent.\n"],
+  ["missing-anchor", "pstack/skills/poteto-mode/SKILL.md", (s) => s.replace("Never raise it above the role line", "Raise it when the job needs it")],
 ];
 
 

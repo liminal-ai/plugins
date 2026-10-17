@@ -1048,21 +1048,25 @@ function runTool({
   }
 }
 
+// gh pr list returns 30 rows unless told otherwise, so every list names its
+// limit, and a page that fills it is treated as truncated rather than complete.
+const PULL_REQUEST_LIST_LIMIT = 500;
+
 function listPullRequests({
   filter,
   branch,
+  state,
   forge,
   repo,
 }: {
   filter: "--head" | "--base";
   branch: string;
+  state: "open" | "all";
   forge: Forge;
   repo: string;
 }): readonly ForgePullRequest[] {
   const query = FORGE_PULL_REQUEST_QUERIES[forge];
-  const command = `${forge} pr list ${filter} ${branch}`;
-  // Every state is fetched because a merged or closed PR still anchors the
-  // chain, and a draft counts as OPEN.
+  const command = `${forge} pr list ${filter} ${branch} --state ${state}`;
   const raw = runTool({
     command: forge,
     args: [
@@ -1071,7 +1075,9 @@ function listPullRequests({
       filter,
       branch,
       "--state",
-      "all",
+      state,
+      "--limit",
+      String(PULL_REQUEST_LIST_LIMIT),
       "--json",
       ["number", query.stateField, query.headField, query.baseField].join(
         ","
@@ -1087,6 +1093,11 @@ function listPullRequests({
   }
   if (!isUnknownArray(value)) {
     throw new UserError(`${command} output is not a JSON array`);
+  }
+  if (value.length >= PULL_REQUEST_LIST_LIMIT) {
+    throw new UserError(
+      `${command} returned ${PULL_REQUEST_LIST_LIMIT} or more pull requests and may be truncated; close the stale ones first`
+    );
   }
   return value.map((row) => {
     const status = isRecord(row) ? row[query.stateField] : undefined;
@@ -1111,35 +1122,56 @@ function listPullRequests({
   });
 }
 
+function prNumbers(rows: readonly ForgePullRequest[]): string {
+  return rows.map((row) => `#${row.pr}`).join(", ");
+}
+
+// A unique open PR anchors the branch. Merged and closed PRs anchor it only
+// when none is open, and several of those need the --prs pin to pick one.
 function branchPullRequest({
   branch,
   forge,
   repo,
+  pinned,
 }: {
   branch: string;
   forge: Forge;
   repo: string;
+  pinned: ReadonlySet<number>;
 }): ForgePullRequest {
-  const rows = listPullRequests({ filter: "--head", branch, forge, repo });
-  // Prefer the single OPEN PR if present (a branch may have historical merged PRs).
-  const openRows = rows.filter((r) => r.state === "OPEN");
-  if (openRows.length === 1) {
-    return openRows[0];
+  const rows = listPullRequests({
+    filter: "--head",
+    branch,
+    state: "all",
+    forge,
+    repo,
+  });
+  const open = rows.filter((row) => row.state === "OPEN");
+  const [firstOpen, secondOpen] = open;
+  if (secondOpen !== undefined) {
+    throw new UserError(
+      `branch ${branch} has several open pull requests (${prNumbers(open)}); close the stale ones first`
+    );
   }
-  const row = rows[0];
-  if (row === undefined) {
+  if (firstOpen !== undefined) {
+    return firstOpen;
+  }
+  const [first, second] = rows;
+  if (first === undefined) {
     throw new UserError(
       `branch ${branch} has no pull request; open one with ${forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`
     );
   }
-  // Multiple PRs pointing at the same head branch. If more than one is OPEN,
-  // this stack is ambiguous. If none are OPEN, require the operator to prune.
-  if (rows.length > 1) {
-    throw new UserError(
-      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); close the stale ones first`
-    );
+  if (second === undefined) {
+    return first;
   }
-  return row;
+  const [chosen, ambiguous] = rows.filter((row) => pinned.has(row.pr));
+  if (chosen !== undefined && ambiguous === undefined) {
+    return chosen;
+  }
+  throw new UserError(
+    `branch ${branch} has no open pull request and several merged or closed ones (${prNumbers(rows)}); pass --prs naming the one that anchors the chain`
+  );
 }
 
 function openChildren({
@@ -1151,9 +1183,13 @@ function openChildren({
   forge: Forge;
   repo: string;
 }): readonly ForgePullRequest[] {
-  return listPullRequests({ filter: "--base", branch, forge, repo }).filter(
-    (row) => row.state === "OPEN"
-  );
+  return listPullRequests({
+    filter: "--base",
+    branch,
+    state: "open",
+    forge,
+    repo,
+  }).filter((row) => row.state === "OPEN");
 }
 
 function runGit({
@@ -1208,7 +1244,15 @@ function trunkBranch(repo: string): string {
   }
 }
 
-function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
+function resolveFrontier({
+  repo,
+  forge,
+  pinned,
+}: {
+  repo: string;
+  forge: Forge;
+  pinned: ReadonlySet<number>;
+}): readonly FrontierPr[] {
   const trunk = trunkBranch(repo);
   const current = currentBranch(repo);
   if (current === trunk) {
@@ -1217,7 +1261,7 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
     );
   }
   const seen = new Set([current]);
-  let bottom = branchPullRequest({ branch: current, forge, repo });
+  let bottom = branchPullRequest({ branch: current, forge, repo, pinned });
   const chain = [bottom];
   while (bottom.base !== trunk) {
     if (seen.has(bottom.base)) {
@@ -1226,7 +1270,7 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
       );
     }
     seen.add(bottom.base);
-    bottom = branchPullRequest({ branch: bottom.base, forge, repo });
+    bottom = branchPullRequest({ branch: bottom.base, forge, repo, pinned });
     chain.unshift(bottom);
   }
   let tip = current;
@@ -1601,7 +1645,11 @@ export function openStore(
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const prs = resolveFrontier(repo, forge);
+        const prs = resolveFrontier({
+          repo,
+          forge,
+          pinned: new Set(pin ?? []),
+        });
         if (pin !== undefined) {
           validateFrontierPin({
             actual: prs.map((row) => row.pr),
