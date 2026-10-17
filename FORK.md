@@ -23,13 +23,35 @@ comm -12 <(git diff --name-only 11713c6 upstream/main -- pstack | sort) \
 
 Check: `git log --oneline <commit>..upstream/main -- cursor-team-kit/skills/<name>` and `git diff upstream/main:cursor-team-kit/skills/<name>/SKILL.md origin/lim:pstack/skills/<name>/SKILL.md`. To refresh, `git show upstream/main:...` over the copy, re-apply the control-ui edit, put the source commit in the commit message and update this table.
 
+## T3 port intent
+
+pstack upstream is written for Cursor. This fork runs it from T3 Code, where one lead thread delegates across providers (Claude, Codex, Cursor) through T3's own tools. The skills are rewritten in place for T3, not translated at runtime, so an agent reading a skill sees only T3 instructions. Each row is a difference the fork keeps on purpose. When upstream changes text in one of these areas, keep upstream's new idea and express it the fork's way. `scripts/check-t3-port.mjs` enforces the rows it can.
+
+| Area | Upstream says | The fork says | Why |
+|---|---|---|---|
+| Subagents | Cursor `Task` with `subagent_type`, `readonly`, `environment` | a T3 `delegate_task` child, `mode: "async"`, with an explicit `target` | Only T3's tool reaches every provider from one lead. A child's task ends with its turn, so its brief tells it never to end the turn to wait. |
+| Model per role | `~/.cursor/rules/pstack-models.mdc`, slugs such as `grok-4.7-xhigh-fast` | the pstack roles block in `~/lim-v2/AGENTS.md`, entries `<providerInstanceId>/<model> <option>=<value>` | Every harness under `~/lim-v2` reads that one file, and T3 takes provider, model and options as separate fields. |
+| Speed | a `-fast` slug, used when the job is urgent | Grok and GPT may run fast freely. Claude fast mode only on a task the operator approves in the session, for that task only. | Grok usage is plentiful. Claude fast mode spends rate limit fast, and a broad reading of one approval gets out of hand. |
+| Waking | Cursor background agents and polling scripts | T3 `watch_pull_request`, child-completion wakes, and a fallback heartbeat per "Waking and polling" in `~/lim-v2/AGENTS.md` | A T3 lead that ends its turn is woken only by an event. A heartbeat covers what the watch misses. |
+| Todo list | the harness's todo tool | the harness's todo tool if it has one, otherwise a checklist file under `todos/` in the pstack store, named in the first message | T3's Claude harness has no todo tool. A file also survives a pause and a pickup. |
+| Trunk | `origin/main` | `origin/lim` for pstack itself, the repo's default branch elsewhere | The fork's default branch is `lim`. Hourly audit ticks re-read playbooks from `origin/lim`. |
+| Skill visibility | `disable-model-invocation: true` on leaf skills | every skill visible, its description ending "Use only when the user or another skill names it." | Hidden skills made Claude's Skill tool refuse them even when poteto-mode named them. |
+| Install | Cursor plugin, or a generated Claude Code or Codex tree | one per-user copy in `~/.agents/skills`, linked from `~/.claude/skills`, agents in `~/.agents/agents` | One install serves every provider T3 runs. Skills point at those absolute paths. |
+| Fix target | upstream issues | a PR to `liminal-ai/pstack-lim` against `lim`, then a reinstall | A broken skill gets fixed in this fork, never worked around. |
+
 ## Syncing upstream
 
-Always a branch and a PR into `lim`, never a direct push. If many files changed on both sides, expect a re-port rather than a merge. Triage each file by the port rule: assume upstream already handles the concern, and keep a port change only where T3 needs it (`delegate_task`, the role file, `origin/lim`, the pstack store, the wake mechanism, todo-file placement). Then check:
+Always a branch and a PR into `lim`, never a direct push. If many files changed on both sides, expect a re-port rather than a merge. Steps:
+
+1. List upstream's commits since the last sync point in `FORK-SYNC-LOG.md`, one row each, marked take, adapt or skip with a reason. A row skipped in an earlier sync stays skipped unless upstream reworked it.
+2. Port by the table above. Assume upstream already handles the concern, keep upstream's new behavior, and change only what a row requires.
+3. Run the checks. The drift check fails with a message that names the fix. If the check is wrong, fix the check in the same PR and say why.
+4. For each upstream commit, confirm every behavior it claims is in the fork, adapted with the row named, or dropped with the reason logged.
+5. Have a reviewer from the other model family read the diff against this section before merging.
 
 ```bash
-rg -n "show origin/lim:" pstack/skills/poteto-mode/scripts/check-plan.mjs
-rg -n "~/lim-v2/AGENTS.md" pstack/skills/setup-pstack/SKILL.md
+node scripts/check-t3-port.mjs
+node --test scripts/check-t3-port.test.mjs
 (cd pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun test)
 ```
 
