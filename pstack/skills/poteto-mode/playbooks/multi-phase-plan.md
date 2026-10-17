@@ -127,7 +127,7 @@ Each live lane runs on its own cloud VM (the `cloud workers` line in the role fi
 
 - [ ] Root's clean verdict at the exact head SHA.
 - [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
+- [ ] Rebased onto current trunk after the verdict, whole-PR patch-id unchanged per `playbooks/shipping.md` step 3.
 - [ ] <The owner squash-merges its own PR, or the root appends it to the base-branch stack and the operator lands it bottom-up.>
 
 ## Close the program

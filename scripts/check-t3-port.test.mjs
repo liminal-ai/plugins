@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const script = join(repo, "scripts/check-t3-port.mjs");
 
-function copyTree() {
+function copyTree(t) {
   const root = mkdtempSync(join(tmpdir(), "t3-port-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   cpSync(join(repo, "pstack"), join(root, "pstack"), {
     recursive: true,
     filter: (src) => !src.includes("node_modules"),
@@ -57,11 +58,12 @@ const regressions = [
   ["effort-raise", "pstack/skills/swarm/SKILL.md", (s) => s + "\nA lane may go up to max.\n"],
   ["effort-raise", "pstack/skills/arena/SKILL.md", (s) => s + "\nUse the fast slug when the job is urgent.\n"],
   ["missing-anchor", "pstack/skills/poteto-mode/SKILL.md", (s) => s.replace("Never raise it above the role line", "Raise it when the job needs it")],
+  ["trunk-main", "pstack/skills/poteto-mode/scripts/watch-pr/watch-pr", (s) => s + "\n# git fetch origin/main\n"],
 ];
 
 
-test("a PENDING entry with no match left fails as stale", () => {
-  const root = copyTree();
+test("a PENDING entry with no match left fails as stale", (t) => {
+  const root = copyTree(t);
   const planted = join(root, "check-t3-port.mjs");
   writeFileSync(
     planted,
@@ -82,9 +84,16 @@ const accepted = [
   ["a Claude target with fast mode far from it", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": {"effort": "high"}}\n' + "\n".repeat(10) + "For Grok use fastMode: true.\n"],
 ];
 
+test("an extensionless binary file is not scanned", (t) => {
+  const root = copyTree(t);
+  writeFileSync(join(root, "pstack/skills/swarm/blob"), Buffer.from("\0git fetch origin/main\n"));
+  const { code, out } = check(root);
+  assert.equal(code, 0, out);
+});
+
 for (const [name, file, change] of accepted) {
-  test(`${name} passes`, () => {
-    const root = copyTree();
+  test(`${name} passes`, (t) => {
+    const root = copyTree(t);
     edit(root, file, change);
     const { code, out } = check(root);
     assert.equal(code, 0, out);
@@ -92,8 +101,8 @@ for (const [name, file, change] of accepted) {
 }
 
 for (const [rule, file, change] of regressions) {
-  test(`a planted ${rule} regression fails`, () => {
-    const root = copyTree();
+  test(`a planted ${rule} regression fails`, (t) => {
+    const root = copyTree(t);
     edit(root, file, change);
     const { code, out } = check(root);
     assert.equal(code, 1);

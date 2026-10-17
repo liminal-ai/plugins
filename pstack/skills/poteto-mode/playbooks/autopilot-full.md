@@ -2,7 +2,7 @@
 
 **You own the verdicts, never the PRs. One owner carries each PR from build to merge, and nothing merges until your swarm, which never wrote the code, has proven the code that lands.**
 
-A verdict covers one patch and green CI covers one head. Step 4 runs a full swarm once, and again only for a major change. The patch-id rule in `playbooks/shipping.md` can carry a lane's result, and every new head needs its own green CI.
+A verdict covers one patch and green CI covers one head. Step 4 runs a full swarm once, and again only for a major change. The patch-id rule in `playbooks/shipping.md` step 3 can carry a lane's result, and every new head needs its own green CI.
 
 1. **The operator's gates come first.** The grant covers only the queue's items, so items the operator names as theirs and PRs outside the queue stop at merge-ready. A request to state the plan is not a go.
 2. **Spawn one owner per PR, and keep its work where a replacement can find it.** Resolve the forge once for the program. GitHub CLI (`gh`) is the default. If `command -v origin` succeeds and Origin can resolve the repository, use `origin pr` for every PR operation. Otherwise stay on `gh` and record the fallback. Never require Graphite (`gt`). Each owner is a `delegate_task` child on the `cloud workers` line in the role file (`~/lim-v2/AGENTS.md` or `~/lim-v2/CLAUDE.md`), or local in its own worktree when it needs this machine. It builds, opens its PR per `playbooks/opening-a-pr.md`, proves the change on the real artifact, babysits to green per `playbooks/babysit.md`, and merges once steps 4 and 5 clear it.

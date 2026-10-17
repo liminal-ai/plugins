@@ -3,8 +3,8 @@
 // or when a T3 anchor goes missing. FORK.md's "T3 port intent" says why each rule exists.
 // Usage: node scripts/check-t3-port.mjs [root]   (root holds pstack/, defaults to this repo)
 
-import { readFileSync, readdirSync, statSync, existsSync } from "fs";
-import { join, relative, resolve, dirname } from "path";
+import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from "fs";
+import { join, relative, resolve, dirname, extname } from "path";
 import { fileURLToPath } from "url";
 
 const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
@@ -104,12 +104,24 @@ const REQUIRED = [
 const PENDING = [
 ];
 
+// An extensionless file, such as an executable script, is text when its first 8 KB hold no NUL byte.
+function looksLikeText(path) {
+  const head = Buffer.alloc(8192);
+  const fd = openSync(path, "r");
+  try {
+    return !head.subarray(0, readSync(fd, head, 0, head.length, 0)).includes(0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function walk(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).flatMap((name) => {
     if (name === "node_modules") return [];
     const path = join(dir, name);
-    return statSync(path).isDirectory() ? walk(path) : TEXT.test(name) ? [path] : [];
+    if (statSync(path).isDirectory()) return walk(path);
+    return TEXT.test(name) || (extname(name) === "" && looksLikeText(path)) ? [path] : [];
   });
 }
 
