@@ -1121,12 +1121,19 @@ function branchPullRequest({
   repo: string;
 }): ForgePullRequest {
   const rows = listPullRequests({ filter: "--head", branch, forge, repo });
+  // Prefer the single OPEN PR if present (a branch may have historical merged PRs).
+  const openRows = rows.filter((r) => r.state === "OPEN");
+  if (openRows.length === 1) {
+    return openRows[0];
+  }
   const row = rows[0];
   if (row === undefined) {
     throw new UserError(
       `branch ${branch} has no pull request; open one with ${forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`
     );
   }
+  // Multiple PRs pointing at the same head branch. If more than one is OPEN,
+  // this stack is ambiguous. If none are OPEN, require the operator to prune.
   if (rows.length > 1) {
     throw new UserError(
       `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); close the stale ones first`
@@ -1205,7 +1212,9 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
   const trunk = trunkBranch(repo);
   const current = currentBranch(repo);
   if (current === trunk) {
-    return [];
+    throw new UserError(
+      `current branch ${current} is the trunk; checkout a stack branch with an open pull request`
+    );
   }
   const seen = new Set([current]);
   let bottom = branchPullRequest({ branch: current, forge, repo });
