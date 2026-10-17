@@ -159,6 +159,23 @@ function forgeRows(
   return JSON.stringify(prs.map((pr) => FORGE_FIXTURES[forge].row(pr)));
 }
 
+async function withBinOnPath<T>(
+  bin: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${bin}:${originalPath ?? ""}`;
+  try {
+    return await operation();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  }
+}
+
 async function withFakeForge<T>({
   directory,
   forge,
@@ -189,7 +206,7 @@ async function withFakeForge<T>({
   );
   const { fields } = FORGE_FIXTURES[forge];
   const list = (filter: string, branch: string): string =>
-    `pr list ${filter} ${branch} --state all --json ${fields}`;
+    `pr list ${filter} ${branch} --state ${filter === "--head" ? "all" : "open"} --limit 500 --json ${fields}`;
   const fake = join(bin, forge);
   await writeFile(
     fake,
@@ -212,12 +229,6 @@ case "$*" in
   "${list("--base", "stack/open")}")
     printf '%s\\n' '${forgeRows(forge, [
       { number: 14, state: "draft", head: "stack/draft", base: "stack/open" },
-      {
-        number: 15,
-        state: "closed",
-        head: "stack/abandoned",
-        base: "stack/open",
-      },
     ])}'
     ;;
   "${list("--base", "stack/draft")}")
@@ -231,18 +242,7 @@ esac
 `
   );
   await chmod(fake, 0o755);
-
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${bin}:${originalPath ?? ""}`;
-  try {
-    return await operation();
-  } finally {
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
-    }
-  }
+  return withBinOnPath(bin, operation);
 }
 
 function runCli(
@@ -589,7 +589,7 @@ describe("Store", () => {
           await expect(
             store.frontier.set({ repo: stack.repo, forge })
           ).rejects.toThrow(
-            `${forge} pr list --head stack/open output is not valid JSON`
+            `${forge} pr list --head stack/open --state all output is not valid JSON`
           );
         },
       });
@@ -608,6 +608,152 @@ describe("Store", () => {
         await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
           "branch stack/open has no pull request; open one with gh pr create"
         );
+      },
+    });
+  });
+
+  // Behaves like gh pr list: filters by --head or --base and by --state, and
+  // returns 30 rows unless --limit says otherwise.
+  async function withPagingGh<T>({
+    directory,
+    rows,
+    operation,
+  }: {
+    directory: string;
+    rows: readonly {
+      number: number;
+      state: FixtureState;
+      head: string;
+      base: string;
+    }[];
+    operation: () => Promise<T>;
+  }): Promise<T> {
+    const bin = join(directory, "bin");
+    const rowsPath = join(directory, "gh-rows.json");
+    await mkdir(bin, { recursive: true });
+    await writeFile(rowsPath, forgeRows("gh", rows));
+    await writeFile(
+      join(bin, "gh"),
+      `#!${process.execPath}
+const rows = JSON.parse(await Bun.file(${JSON.stringify(rowsPath)}).text());
+const args = process.argv.slice(2);
+const flag = args.includes("--head") ? "--head" : "--base";
+const field = flag === "--head" ? "headRefName" : "baseRefName";
+const branch = args[args.indexOf(flag) + 1];
+const state = args[args.indexOf("--state") + 1];
+const limit = args.includes("--limit") ? Number(args[args.indexOf("--limit") + 1]) : 30;
+const matching = rows.filter(
+  (row) => row[field] === branch && (state === "all" || row.state === state.toUpperCase())
+);
+console.log(JSON.stringify(matching.slice(0, limit)));
+`
+    );
+    await chmod(join(bin, "gh"), 0o755);
+    return withBinOnPath(bin, operation);
+  }
+
+  it("finds an open child beyond gh's default page of closed predecessors", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+    const closedPredecessors = Array.from({ length: 30 }, (_, index) => ({
+      number: 100 + index,
+      state: "closed" as const,
+      head: `old/${index}`,
+      base: "stack/open",
+    }));
+
+    await withPagingGh({
+      directory,
+      rows: [
+        { number: 11, state: "open", head: "stack/open", base: "main" },
+        ...closedPredecessors,
+        { number: 14, state: "open", head: "stack/draft", base: "stack/open" },
+      ],
+      operation: async () => {
+        expect(
+          (await store.frontier.set({ repo: stack.repo })).prs.map(
+            (row) => row.pr
+          )
+        ).toEqual([11, 14]);
+      },
+    });
+  });
+
+  it("fails loudly when a pull request list may be truncated", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withPagingGh({
+      directory,
+      rows: Array.from({ length: 500 }, (_, index) => ({
+        number: 100 + index,
+        state: "closed" as const,
+        head: "stack/open",
+        base: "main",
+      })),
+      operation: async () => {
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          "gh pr list --head stack/open --state all returned 500 or more pull requests and may be truncated; close the stale ones first"
+        );
+      },
+    });
+  });
+
+  it("anchors a branch on its open pull request over a closed predecessor", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withPagingGh({
+      directory,
+      rows: [
+        { number: 11, state: "open", head: "stack/open", base: "main" },
+        { number: 9, state: "closed", head: "stack/open", base: "main" },
+      ],
+      operation: async () => {
+        expect(await store.frontier.set({ repo: stack.repo })).toEqual({
+          generation: 1,
+          prs: [
+            {
+              pr: 11,
+              branches: "stack/open",
+              sha: stack.openSha,
+              state: "OPEN",
+            },
+          ],
+          lowestUnmerged: 11,
+        });
+      },
+    });
+  });
+
+  it("needs --prs to pick between several merged or closed anchors", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withPagingGh({
+      directory,
+      rows: [
+        { number: 9, state: "closed", head: "stack/open", base: "main" },
+        { number: 8, state: "merged", head: "stack/open", base: "main" },
+      ],
+      operation: async () => {
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          "branch stack/open has no open pull request and several merged or closed ones (#9, #8); pass --prs naming the one that anchors the chain"
+        );
+        expect(
+          await store.frontier.set({ repo: stack.repo, prs: [8] })
+        ).toEqual({
+          generation: 1,
+          prs: [
+            {
+              pr: 8,
+              branches: "stack/open",
+              sha: stack.openSha,
+              state: "MERGED",
+            },
+          ],
+          lowestUnmerged: null,
+        });
       },
     });
   });
