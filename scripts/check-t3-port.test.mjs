@@ -49,6 +49,8 @@ const regressions = [
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"target":{"options":{"fastMode":true},"providerInstanceId":"claudeAgent","model":"claude-opus-5-5"}}\n'],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + "\nconst target = { providerInstanceId: 'claudeAgent', model: 'claude-opus-5-5', options: { fastMode: true } };\n"],
   ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": [{"id": "effort", "value": "high"}, {"id": "fastMode", "value": true}]}\n'],
+  ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId":"claudeAgent","options":[{"value":true,"id":"fastMode"}]}\n'],
+  ["claude-fast-default", "pstack/skills/swarm/SKILL.md", (s) => s + "\nconst target = {\n  providerInstanceId: 'claudeAgent', // } closes this object\n  options: { fastMode: true }\n};\n"],
 ];
 
 const firstPending = readFileSync(script, "utf-8").match(/\{ rule: "[^"]+", file: "([^"]+)"/)?.[1];
@@ -58,7 +60,7 @@ const accepted = [
   ["a folded description with a blank line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: >-\n  Explain why.\n\n  Use only when the user or another skill names it.")],
   ["disable-model-invocation: false", "pstack/skills/how/SKILL.md", (s) => s.replace("---\n", "---\ndisable-model-invocation: false\n")],
   ["a plain description that continues on the next line", "pstack/skills/why/SKILL.md", (s) => s.replace(/^description: .*$/m, "description: Explain why.\n  Use only when the user or another skill names it.")],
-  ["a Claude target with fast mode off near prose about Grok", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": {"fastMode": false}}\nFor Grok use fastMode: true.\n'],
+  ["a Claude target with fast mode far from it", "pstack/skills/swarm/SKILL.md", (s) => s + '\n{"providerInstanceId": "claudeAgent", "options": {"effort": "high"}}\n' + "\n".repeat(10) + "For Grok use fastMode: true.\n"],
 ];
 
 for (const [name, file, change] of accepted) {
