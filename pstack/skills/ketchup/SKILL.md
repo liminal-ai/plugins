@@ -25,7 +25,7 @@ Then show what happened, pictures first. Embed inline the screenshots and record
 
 Then list the action items as plain bullets, never as a diagram or box. Give each two lines, or one for an unasked irreversible step: the decision with your recommendation and why, then what happens if the user does not answer. Ask the call the user owns, such as merge, approve, or pick. A step you would take first goes in your recommendation. So does anything that must happen first, and anything that cannot be undone. Write "unknown" for a part you do not know. Link to the detail.
 
-Show a choice after the list. If the screenshots above already show its options, write each option's gain and cost under its screenshot instead of drawing a new visual; otherwise, compare the options side by side on the published page, with the current state when there is one. Give every option the work weighed, each with what it gets the user and what it costs. Keep them out of the rest of the text.
+Show each choice above the list, not after it. If the screenshots above already show its options, write each option's gain and cost under its screenshot instead of drawing a new visual. Otherwise compare the options side by side on the published page, with the current state when there is one, and end the action item with "see the page above". Give every option the work weighed, each with what it gets the user and what it costs. Keep them out of the rest of the text.
 
 ## Visuals
 
