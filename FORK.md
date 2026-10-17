@@ -1,16 +1,17 @@
 # Fork maintenance: liminal-ai/pstack-lim
 
-Fork of `cursor/plugins`, default branch `lim`. Fork point: upstream `11713c6` (pstack 0.15.17). Install only from `pstack/`, never the repo root; for the `/orchestrate` name clash see `poteto-help`. Role-file setup lives in `setup-pstack`.
+Fork of `cursor/plugins`, default branch `lim`. Fork point: upstream `11713c6` (pstack 0.15.17). Last synced: upstream `101b274` (pstack 0.15.25), recorded in `FORK-SYNC-LOG.md`. Install only from `pstack/`, never the repo root; for the `/orchestrate` name clash see `poteto-help`. Role-file setup lives in `setup-pstack`.
 
 ## Upstream drift
 
 ```bash
 git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/cursor/plugins.git
 git fetch --multiple upstream origin
-git log --oneline 11713c6..upstream/main -- pstack cursor-team-kit/skills   # upstream commits since fork
+SYNC=101b274   # last synced upstream commit; set it to the new tip after each sync
+git log --oneline $SYNC..upstream/main -- pstack cursor-team-kit/skills     # upstream commits since the last sync
 git show upstream/main:pstack/.cursor-plugin/plugin.json | rg version        # upstream pstack version
-comm -12 <(git diff --name-only 11713c6 upstream/main -- pstack | sort) \
-         <(git diff --name-only 11713c6 origin/lim -- pstack | sort)        # changed on both sides
+comm -12 <(git diff --name-only $SYNC upstream/main -- pstack | sort) \
+         <(git diff --name-only 11713c6 origin/lim -- pstack | sort)        # changed upstream since the sync and in the fork
 ```
 
 ## Copied cursor-team-kit skills
@@ -45,7 +46,7 @@ pstack upstream is written for Cursor. This fork runs it from T3 Code, where one
 
 Always a branch and a PR into `lim`, never a direct push. If many files changed on both sides, expect a re-port rather than a merge. Steps:
 
-1. List upstream's commits since the last sync point in `FORK-SYNC-LOG.md`, one row each, marked take, adapt or skip with a reason. A row skipped in an earlier sync stays skipped unless upstream reworked it.
+1. List upstream's commits since the last sync point (`SYNC` above) in a new `FORK-SYNC-LOG.md` table, one row each, marked take, adapt or skip with a reason. A row skipped in an earlier sync stays skipped unless upstream reworked it. After the last PR merges, set `SYNC` and the "Last synced" line to the new tip.
 2. Port by the table above. Assume upstream already handles the concern, keep upstream's new behavior, and change only what a row requires.
 3. Run the checks. The drift check fails with a message that names the fix. If the check is wrong, fix the check in the same PR and say why.
 4. For each upstream commit, confirm every behavior it claims is in the fork, adapted with the row named, or dropped with the reason logged.
