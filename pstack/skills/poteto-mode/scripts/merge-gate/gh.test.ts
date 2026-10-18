@@ -246,12 +246,82 @@ for (const [label, name, value] of [
       statusCheckRollup: {
         contexts: {
           pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [
-            { name: "ci", status: "COMPLETED", conclusion: "FAILURE" },
-          ],
+          nodes: [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }],
         },
       },
     }),
+  ],
+  [
+    "a comment whose author has an unknown account type",
+    "comments.json",
+    [
+      [
+        {
+          id: 9,
+          user: { login: "someone", type: "Robot" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
+  ],
+  [
+    "a comment with an empty login",
+    "comments.json",
+    [
+      [
+        {
+          id: 9,
+          user: { login: "", type: "User" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
+  ],
+  [
+    "a comment with a zero id",
+    "comments.json",
+    [
+      [
+        {
+          id: 0,
+          user: { login: "someone", type: "User" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
+  ],
+  [
+    "two comments with the same id",
+    "comments.json",
+    [
+      [
+        {
+          id: 9,
+          user: { login: "a", type: "User" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+        {
+          id: 9,
+          user: { login: "b", type: "User" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
   ],
   [
     "a comment whose author has no account type",

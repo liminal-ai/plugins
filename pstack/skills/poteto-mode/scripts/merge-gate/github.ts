@@ -81,6 +81,9 @@ query MergeQueue($owner: String!, $repo: String!, $branch: String!) {
 }
 `;
 
+/** Only "User" counts as a person; the others are GitHub's documented non-person account types. */
+const ACCOUNT_TYPES = new Set(["User", "Bot", "Organization", "Mannequin"]);
+
 const repoName = (repo: Repository): string => `${repo.owner}/${repo.repo}`;
 
 function graphql(
@@ -177,7 +180,9 @@ export class GhGitHub implements GitHub {
       for (const node of list(contexts.nodes, "contexts.nodes")) {
         const check = mapRollupNode(node);
         if (check === null)
-          readError(`a check on ${head} came back in a shape the gate cannot read`);
+          readError(
+            `a check on ${head} came back in a shape the gate cannot read`
+          );
         checks.push(check);
       }
       after = nextCursor(contexts.pageInfo, "contexts.pageInfo");
@@ -239,16 +244,25 @@ export class GhGitHub implements GitHub {
       "--slurp",
       `repos/${repoName(pr)}/issues/${pr.number}/comments?per_page=100`,
     ]);
+    const seen = new Set<number>();
     return list(pages, "comment pages").flatMap((page) =>
       list(page, "comment page").map((item) => {
         const comment = record(item, "comment");
         const user = record(comment.user, "comment.user");
-        if (!Number.isSafeInteger(comment.id))
-          readError("comment.id is not an integer");
+        const id = comment.id;
+        if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)
+          readError("comment.id is not a positive integer");
+        if (seen.has(id)) readError(`comment ${id} appears twice`);
+        seen.add(id);
+        const login = string(user.login, "comment.user.login");
+        if (login === "") readError(`comment ${id} has an empty login`);
+        const type = string(user.type, "comment.user.type");
+        if (!ACCOUNT_TYPES.has(type))
+          readError(`comment ${id} has an unknown account type ${type}`);
         return {
-          id: comment.id as number,
-          author: string(user.login, "comment.user.login"),
-          isBot: string(user.type, "comment.user.type") === "Bot",
+          id,
+          author: login,
+          isBot: type !== "User",
           body: string(comment.body, "comment.body"),
           createdAt: string(comment.created_at, "comment.created_at"),
           updatedAt: string(comment.updated_at, "comment.updated_at"),
