@@ -476,6 +476,14 @@ test("an earlier round's README asks only for its synthesis", (t) => {
   assert.doesNotMatch(readme, /merge-gate\.md/);
 });
 
+test("a thread an agent created, with an mcp: id, registers and reflects", (t) => {
+  const { run, reflect } = sandbox(t);
+  const id = "mcp:5f6a3c80-20ac-4892-86dc-6ccda9c470b5";
+  reflect(id);
+  assert.match(run(["status"]).out, /t3-thread:\/\/v1\/mcp:5f6a3c80/);
+  assert.match(run(["register", "thread:delegated-task:x"]).err, /needs a T3 thread id/);
+});
+
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);
