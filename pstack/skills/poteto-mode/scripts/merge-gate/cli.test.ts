@@ -128,7 +128,7 @@ describe("merge-gate", () => {
         checks: [passing(), running("Cursor Bugbot"), failing("BUGBOT review")],
       });
       expect(result.exit).toBe(0);
-      expect(result.out).toContain("met: Checks (1 passed)");
+      expect(result.out).toContain("met: Checks (1 passed, 2 Bugbot ignored)");
     });
   });
 

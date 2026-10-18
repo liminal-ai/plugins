@@ -181,13 +181,15 @@ const checks: Requirement = {
   name: "Checks",
   evaluate({ checks: all }) {
     const counted = all.filter((check) => !/bugbot/i.test(check.name));
-    if (counted.length === 0) return met("no checks reported");
+    const ignored = all.length - counted.length;
+    const bugbot = ignored === 0 ? "" : `, ${ignored} Bugbot ignored`;
+    if (counted.length === 0) return met(`no checks reported${bugbot}`);
     const running = counted.filter(
       (check) => check.kind === "pending" || check.kind === "code-review-gate"
     );
     const failed = counted.filter((check) => check.kind === "failed");
     if (running.length === 0 && failed.length === 0)
-      return met(`${counted.length} passed`);
+      return met(`${counted.length} passed${bugbot}`);
     const parts: string[] = [];
     if (failed.length > 0)
       parts.push(
