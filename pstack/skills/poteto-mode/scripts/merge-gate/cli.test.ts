@@ -496,6 +496,22 @@ describe("merge-gate", () => {
       expect(result.log()).toContain("\tmerge\twrong-base\t");
     });
 
+    it("says plainly when someone else merged the PR while the gate's merge failed", async () => {
+      const result = await gate(
+        {
+          merge: { ok: false, detail: "Pull request is already merged" },
+          readBack: { state: "MERGED" },
+        },
+        []
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toStartWith(
+        `MERGED, BUT NOT BY THE GATE: owner/repo#1 at ${repos.head.slice(0, 7)} into main`
+      );
+      expect(result.out).not.toContain("NOT MERGED");
+      expect(result.log()).toContain("\tmerge\tmerged-elsewhere\t");
+    });
+
     it("merges nothing when the PR was retargeted after evaluation", async () => {
       const result = await gate({ pullAtMerge: { baseRefName: "parent" } }, []);
       expect(result.exit).toBe(1);

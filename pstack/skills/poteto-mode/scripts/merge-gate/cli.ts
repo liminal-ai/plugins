@@ -50,6 +50,7 @@ interface RunRecord {
     | "would-merge"
     | "refused"
     | "wrong-base"
+    | "merged-elsewhere"
     | "error";
   readonly missing: readonly string[];
 }
@@ -232,6 +233,16 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
         evaluations
       ),
       run: { ...run, outcome: "merged", missing: [] },
+    };
+  if (!attempt.ok && after.state === "MERGED")
+    return {
+      exit: EXIT.refused,
+      text: `MERGED, BUT NOT BY THE GATE: ${at} into ${after.baseRefName}${commit}\nThe gate's merge command failed (${attempt.detail}), yet GitHub reads the PR as merged${after.mergedAt === null ? "" : ` at ${after.mergedAt}`}. Someone else merged it, and the gate cannot say which head landed. Check the merge commit before building on it.\n`,
+      run: {
+        ...run,
+        outcome: "merged-elsewhere",
+        missing: [`merge: ${attempt.detail}`],
+      },
     };
   const read = `GitHub reads the PR as ${after.state} against ${after.baseRefName}${after.mergedAt === null ? "" : `, merged at ${after.mergedAt}`}.`;
   return notMerged(
