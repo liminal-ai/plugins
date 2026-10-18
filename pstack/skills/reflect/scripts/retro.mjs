@@ -16,7 +16,7 @@ const USAGE = `usage: retro.mjs <command>
   backlog [--all]
   remind [--answered]`;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const THREAD_ID = /^(mcp:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DAY = 24 * 60 * 60 * 1000;
 const DUE_COUNT = 3;
 const DUE_AGE_DAYS = 7;
@@ -259,7 +259,7 @@ function applyTrail(home, rec, plan, at) {
 }
 
 function threadRecord(id, args, at) {
-  if (!UUID.test(id ?? "")) refuse(`needs a T3 thread id (a UUID), got ${id ?? "nothing"}`);
+  if (!THREAD_ID.test(id ?? "")) refuse(`needs a T3 thread id (a UUID, or mcp: and a UUID), got ${id ?? "nothing"}`);
   const file = join(RETRO, id, "thread.json");
   const problems = [];
   const rec = (existsSync(file) && readJson(file, problems)) || {

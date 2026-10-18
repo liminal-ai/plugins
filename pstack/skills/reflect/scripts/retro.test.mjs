@@ -27,7 +27,9 @@ function sandbox(t) {
   const home = (id) => join(store, "retro", id);
   const record = (id) => JSON.parse(readFileSync(join(home(id), "thread.json"), "utf-8"));
   const reflect = (id, nowIso, files = {}) => {
-    const dir = run(["reflect", id], nowIso).out.trim();
+    const allocated = run(["reflect", id], nowIso);
+    assert.equal(allocated.code, 0, allocated.err);
+    const dir = allocated.out.trim();
     writeFileSync(join(dir, "synthesis.md"), "findings\n");
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
     assert.equal(run(["register", id, "--reflected", dir], nowIso).code, 0);
@@ -474,6 +476,14 @@ test("an earlier round's README asks only for its synthesis", (t) => {
   const readme = readFileSync(join(store, "retro", "rounds", "2026-10-16", "README.md"), "utf-8");
   assert.match(readme, /synthesis\.md/);
   assert.doesNotMatch(readme, /merge-gate\.md/);
+});
+
+test("a thread an agent created, with an mcp: id, registers and reflects", (t) => {
+  const { run, reflect } = sandbox(t);
+  const id = "mcp:5f6a3c80-20ac-4892-86dc-6ccda9c470b5";
+  reflect(id);
+  assert.match(run(["status"]).out, /t3-thread:\/\/v1\/mcp:5f6a3c80/);
+  assert.match(run(["register", "thread:delegated-task:x"]).err, /needs a T3 thread id/);
 });
 
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
