@@ -101,7 +101,7 @@ test("a second reflect keeps the first, and a retry keeps the completion time", 
   const reflects = record(A).reflects;
   assert.equal(reflects.length, 2);
   assert.match(reflects[0].completedAt, /^2026-10-0[01]/);
-  assert.match(run(["status"], "2026-10-08T10:00:00Z").out, /Round due: yes, 1 reflect waiting, oldest 7 days/);
+  assert.match(run(["status"], "2026-10-08T10:00:00Z").out, /Round due: yes, 2 reflects waiting, oldest 7 days/);
 });
 
 test("copied trails keep every version; an unchanged source adds none", (t) => {
@@ -299,21 +299,57 @@ test("an open that did not finish is reported and does not block the next", (t) 
   assert.equal(run(["open", "--at", "2026-10-20"]).out.trim(), join(store, "retro", "rounds", "2026-10-20-2"));
 });
 
-test("a live holder's lock makes a command refuse; a dead holder's lock is cleared", async (t) => {
+test("a command waits for the lock and refuses when it stays held; a killed holder frees it", async (t) => {
   const { store, run } = sandbox(t);
-  const lock = join(store, "retro", ".lock");
-  mkdirSync(lock, { recursive: true });
-  const holder = spawn("sleep", ["30"]);
-  t.after(() => holder.kill());
-  writeFileSync(join(lock, "pid"), String(holder.pid));
+  mkdirSync(join(store, "retro"), { recursive: true });
+  const holder = spawn("flock", [join(store, "retro", ".lock"), "sleep", "30"], { detached: true });
+  const killHolder = () => {
+    try {
+      process.kill(-holder.pid, "SIGKILL");
+    } catch {}
+  };
+  t.after(killHolder);
+  await new Promise((r) => setTimeout(r, 200));
   const blocked = run(["register", A], undefined, { RETRO_LOCK_WAIT_MS: "300" });
   assert.equal(blocked.code, 1);
-  assert.match(blocked.err, /another retro command holds/);
+  assert.match(blocked.err, /another retro command held/);
+  const exited = new Promise((r) => holder.on("exit", r));
+  killHolder();
+  await exited;
+  assert.equal(run(["register", A], undefined, { RETRO_LOCK_WAIT_MS: "3000" }).code, 0);
+});
 
-  holder.kill();
-  await new Promise((r) => holder.on("exit", r));
-  assert.equal(run(["register", A], undefined, { RETRO_LOCK_WAIT_MS: "300" }).code, 0);
-  assert.ok(!existsSync(lock), "the lock is released after the command");
+test("three reflects in one thread make a round due", (t) => {
+  const { run, reflect } = sandbox(t);
+  reflect(A);
+  reflect(A);
+  assert.match(run(["status"]).out, /Round due: no, 2 reflects waiting/);
+  reflect(A);
+  assert.match(run(["remind"]).out, /^ASK: 3 reflects waiting/);
+});
+
+test("a changed directory always gets a new copy, even when its bytes could read as file headers", (t) => {
+  const { run, record } = sandbox(t);
+  const dir = join(scratchDir(t), "trail");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "a"), "xf:b\ny");
+  run(["register", A, "--trail", dir]);
+  writeFileSync(join(dir, "a"), "x");
+  writeFileSync(join(dir, "b"), "y");
+  run(["register", A, "--trail", dir]);
+  assert.equal(record(A).trails.length, 2);
+});
+
+test("a refused register copies nothing", (t) => {
+  const { run, home, record } = sandbox(t);
+  const scratch = scratchDir(t);
+  writeFileSync(join(scratch, "log.tsv"), "v1\n");
+  run(["register", A, "--trail", join(scratch, "log.tsv")]);
+  writeFileSync(join(scratch, "log.tsv"), "v2\n");
+  assert.match(run(["register", A, "--trail", join(scratch, "log.tsv"), "--trail", join(scratch, "missing.tsv")]).err, /trail not found/);
+  assert.match(run(["register", A, "--trail", join(scratch, "log.tsv"), "--reflected", home(A)]).err, /synthesis\.md is missing/);
+  assert.equal(record(A).trails.length, 1);
+  assert.equal(readdirSync(join(home(A), "trails")).length, 1);
 });
 
 test("parallel registrations of one thread keep every trail", async (t) => {

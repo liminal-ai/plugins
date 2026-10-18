@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: retro.mjs <command>
   reflect <thread-id> [--title T] [--project P]
@@ -96,39 +97,16 @@ function isFile(path) {
   }
 }
 
-function alive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-
-function withLock(fn) {
+// flock(1) holds a kernel lock for the whole command, so a crash or a reused pid can never leave it stuck.
+function underLock(argv) {
   mkdirSync(RETRO, { recursive: true });
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      mkdirSync(LOCK);
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      const holder = Number(existsSync(join(LOCK, "pid")) ? readFileSync(join(LOCK, "pid"), "utf-8") : NaN);
-      if (Number.isInteger(holder) && !alive(holder)) {
-        rmSync(LOCK, { recursive: true, force: true });
-        continue;
-      }
-      if (Date.now() > deadline) refuse(`another retro command holds ${LOCK} (pid ${holder || "unknown"})`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    }
-  }
-  writeFileSync(join(LOCK, "pid"), String(process.pid));
-  try {
-    return fn();
-  } finally {
-    rmSync(LOCK, { recursive: true, force: true });
-  }
+  const r = spawnSync("flock", ["-E", "75", "-w", String(LOCK_WAIT_MS / 1000), LOCK, process.execPath, fileURLToPath(import.meta.url), ...argv], {
+    stdio: "inherit",
+    env: { ...process.env, RETRO_LOCKED: "1" },
+  });
+  if (r.error?.code === "ENOENT") refuse("retro.mjs needs flock(1) on PATH");
+  if (r.status === 75) refuse(`another retro command held ${LOCK} for ${LOCK_WAIT_MS / 1000}s; try again`);
+  process.exitCode = r.status ?? 1;
 }
 
 function load() {
@@ -165,7 +143,7 @@ function statusOf(thread, rounds) {
   const open = inRounds.find((r) => !r.closedAt);
   if (open) return { kind: "in-round", round: open.round };
   const pending = pendingReflects(thread, rounds);
-  if (pending.length) return { kind: "waiting", since: Math.min(...pending.map((c) => new Date(c.completedAt).getTime())) };
+  if (pending.length) return { kind: "waiting" };
   if (inRounds.length) return { kind: "retrod", round: inRounds.at(-1).round };
   return { kind: "no-reflect" };
 }
@@ -177,9 +155,9 @@ function dueReason({ threads, rounds }, at) {
     const reason = `round ${open.round} has been open ${openDays} day${openDays === 1 ? "" : "s"}`;
     return { due: openDays >= STALE_ROUND_DAYS, reason: openDays >= STALE_ROUND_DAYS ? `${reason}; finish and close it` : reason };
   }
-  const waiting = [...threads.values()].map((t) => statusOf(t, rounds)).filter((s) => s.kind === "waiting");
+  const waiting = [...threads.values()].flatMap((t) => pendingReflects(t, rounds)).map((c) => new Date(c.completedAt).getTime());
   if (waiting.length === 0) return { due: false, reason: "no reflects waiting" };
-  const ageDays = Math.floor((at.getTime() - Math.min(...waiting.map((s) => s.since))) / DAY);
+  const ageDays = Math.floor((at.getTime() - Math.min(...waiting)) / DAY);
   const summary = `${waiting.length} reflect${waiting.length === 1 ? "" : "s"} waiting, oldest ${ageDays} day${ageDays === 1 ? "" : "s"}`;
   return { due: waiting.length >= DUE_COUNT || ageDays >= DUE_AGE_DAYS, reason: summary };
 }
@@ -221,17 +199,9 @@ function trailMode(target) {
 }
 
 function digest(path) {
-  const hash = createHash("sha256");
-  const visit = (p, rel) => {
-    if (statSync(p).isDirectory()) {
-      hash.update(`d:${rel}\n`);
-      for (const name of readdirSync(p).sort()) visit(join(p, name), join(rel, name));
-    } else {
-      hash.update(`f:${rel}\n`).update(readFileSync(p));
-    }
-  };
-  visit(path, ".");
-  return hash.digest("hex");
+  const sha = (data) => createHash("sha256").update(data).digest("hex");
+  const tree = (p) => (statSync(p).isDirectory() ? Object.fromEntries(readdirSync(p).sort().map((n) => [n, tree(join(p, n))])) : sha(readFileSync(p)));
+  return sha(JSON.stringify(tree(path)));
 }
 
 function copyResolved(src, dest) {
@@ -314,13 +284,15 @@ function cmdReflect(args) {
 function cmdRegister(args) {
   const at = now();
   const { rec, file, home } = threadRecord(args._[0], args, at);
-  for (const trail of args.trail) addTrail(home, rec, trail, at);
-  if (args.reflected) {
-    const dir = resolve(args.reflected);
-    if (!within(dir, home)) refuse(`--reflected takes a folder inside ${home}, got ${dir}`);
-    if (!isFile(join(dir, "synthesis.md"))) refuse(`write the reflect outputs first: ${join(dir, "synthesis.md")} is missing`);
-    if (!rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
+  const dir = args.reflected && resolve(args.reflected);
+  if (dir && !within(dir, home)) refuse(`--reflected takes a folder inside ${home}, got ${dir}`);
+  if (dir && !isFile(join(dir, "synthesis.md"))) refuse(`write the reflect outputs first: ${join(dir, "synthesis.md")} is missing`);
+  for (const trail of args.trail) {
+    const last = current(rec, resolve(trail));
+    if (!existsSync(trail) && !(last?.mode === "copied" && existsSync(last.path))) refuse(`trail not found: ${resolve(trail)}`);
   }
+  for (const trail of args.trail) addTrail(home, rec, trail, at);
+  if (dir && !rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
   writeJson(file, rec);
   refreshRegistry();
   console.log(home);
@@ -552,8 +524,8 @@ try {
     process.exit(command ? 1 : 0);
   }
   const args = parse(rest);
-  if (command === "backlog") COMMANDS[command](args);
-  else withLock(() => COMMANDS[command](args));
+  if (command === "backlog" || process.env.RETRO_LOCKED) COMMANDS[command](args);
+  else underLock([command, ...rest]);
 } catch (err) {
   if (!(err instanceof Refusal)) throw err;
   console.error(`retro: ${err.message}`);

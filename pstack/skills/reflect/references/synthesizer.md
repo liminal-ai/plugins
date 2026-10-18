@@ -53,4 +53,4 @@ For each rejected finding:
 
 ## Backlog
 
-For each item, describe the pattern, what was hit, and the suggested mechanism. The parent saves them to the thread's `backlog.md`.
+For each item, describe the pattern, what was hit, and the suggested mechanism. The parent saves them to this reflect's `backlog.md`.
