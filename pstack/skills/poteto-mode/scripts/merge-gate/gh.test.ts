@@ -22,6 +22,7 @@ case "$*" in
   "api --paginate"*) cat "$FAKE_GH_DIR/comments.json" ;;
   *HeadChecks*) cat "$FAKE_GH_DIR/checks.json" ;;
   *OpenThreads*) cat "$FAKE_GH_DIR/threads.json" ;;
+  *MergeQueue*) cat "$FAKE_GH_DIR/queue.json" ;;
   *) echo "unexpected gh call: $*" >&2; exit 9 ;;
 esac
 `;
@@ -41,6 +42,7 @@ beforeAll(() => {
   const json = (name: string, value: unknown) =>
     writeFileSync(join(dir, name), JSON.stringify(value));
   json("repo.json", { defaultBranchRef: { name: "main" } });
+  json("queue.json", { data: { repository: { mergeQueue: null } } });
   json("pr.json", {
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
@@ -162,7 +164,7 @@ it("reads and merges through gh, naming the repo on every call", async () => {
         .split("\0")
         .slice(0, -1)
     );
-  expect(calls.length).toBe(8);
+  expect(calls.length).toBe(9);
   for (const argv of calls) {
     const names = argv.includes("--repo")
       ? argv[argv.indexOf("--repo") + 1] === "owner/repo"

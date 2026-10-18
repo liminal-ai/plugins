@@ -27,6 +27,7 @@ export type MergeAttempt =
 /** The GitHub reads and the one write the gate makes. Every call names the repo; gh never picks one. */
 export interface GitHub {
   defaultBranch(repo: Repository): Promise<string>;
+  usesMergeQueue(repo: Repository, branch: string): Promise<boolean>;
   pullRequest(pr: PrRef): Promise<PullRequest>;
   checks(repo: Repository, head: string): Promise<readonly Check[]>;
   openThreads(pr: PrRef): Promise<readonly OpenThread[]>;
@@ -71,6 +72,12 @@ query OpenThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {
       }
     }
   }
+}
+`;
+
+const MERGE_QUEUE_QUERY = `
+query MergeQueue($owner: String!, $repo: String!, $branch: String!) {
+  repository(owner: $owner, name: $repo) { mergeQueue(branch: $branch) { id } }
 }
 `;
 
@@ -128,6 +135,11 @@ export class GhGitHub implements GitHub {
       at(value, ["defaultBranchRef", "name"]),
       "defaultBranchRef.name"
     );
+  }
+
+  async usesMergeQueue(repo: Repository, branch: string): Promise<boolean> {
+    const value = await graphql(MERGE_QUEUE_QUERY, repo, { branch });
+    return at(value, ["data", "repository", "mergeQueue"]) !== null;
   }
 
   async pullRequest(pr: PrRef): Promise<PullRequest> {

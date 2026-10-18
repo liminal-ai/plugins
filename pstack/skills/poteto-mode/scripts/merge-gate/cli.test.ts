@@ -102,6 +102,13 @@ describe("merge-gate", () => {
     }
   });
 
+  it("refuses, and queues nothing, when the base branch uses a merge queue", async () => {
+    const result = await gate({ mergeQueue: true }, []);
+    expect(result.exit).toBe(1);
+    expect(result.missing.join("\n")).toContain("main uses a merge queue");
+    expect(merged(result.calls)).toBe(false);
+  });
+
   describe("checks", () => {
     it("refuses a failed check and names it", async () => {
       const result = await gate({ checks: [passing(), failing("build")] });

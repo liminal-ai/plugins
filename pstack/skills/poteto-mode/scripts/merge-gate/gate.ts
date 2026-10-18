@@ -59,6 +59,7 @@ export interface InstructionFiles {
 export interface Facts {
   readonly pr: PrRef;
   readonly defaultBranch: string;
+  readonly baseUsesMergeQueue: boolean;
   readonly pull: PullRequest;
   readonly checks: readonly Check[];
   readonly threads: readonly OpenThread[];
@@ -163,7 +164,7 @@ const unmet = (missing: string, details?: readonly string[]): Result => ({
 
 const openAndMergeable: Requirement = {
   name: "Open and mergeable",
-  evaluate({ pull, defaultBranch }) {
+  evaluate({ pull, defaultBranch, baseUsesMergeQueue }) {
     if (pull.state === "MERGED")
       return unmet("The PR is already merged. There is nothing to merge.");
     if (pull.state === "CLOSED")
@@ -173,6 +174,10 @@ const openAndMergeable: Requirement = {
     if (pull.baseRefName !== defaultBranch)
       return unmet(
         `The PR targets ${pull.baseRefName}, not ${defaultBranch}. Merge its parent first, then retarget it to ${defaultBranch}.`
+      );
+    if (baseUsesMergeQueue)
+      return unmet(
+        `${defaultBranch} uses a merge queue. The gate merges directly, and here gh would only queue the PR, which could then land after the gate's checks went stale. Ask Lee how to land it.`
       );
     if (pull.mergeable === "CONFLICTING")
       return unmet(

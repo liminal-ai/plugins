@@ -24,9 +24,10 @@ export async function readFacts(
     github.issueComments(pr),
   ]);
   const head = pull.headRefOid;
-  const [checks, threads] = await Promise.all([
+  const [checks, threads, baseUsesMergeQueue] = await Promise.all([
     github.checks(pr, head),
     github.openThreads(pr),
+    github.usesMergeQueue(pr, pull.baseRefName),
   ]);
 
   const baseTip = git.branchTip(remote, pull.baseRefName);
@@ -55,6 +56,7 @@ export async function readFacts(
   return {
     pr,
     defaultBranch,
+    baseUsesMergeQueue,
     pull,
     checks,
     threads,

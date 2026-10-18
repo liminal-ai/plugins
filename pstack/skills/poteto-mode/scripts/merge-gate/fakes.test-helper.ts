@@ -199,6 +199,7 @@ export const codexComment = (sha: string, status = "completed"): IssueComment =>
 
 export interface FakeOptions {
   readonly defaultBranch?: string;
+  readonly mergeQueue?: boolean;
   readonly pull: Partial<PullRequest> & { readonly headRefOid: string };
   /** What a second pull request read returns, as when the PR changes between evaluation and merge. */
   readonly pullAtMerge?: Partial<PullRequest>;
@@ -224,6 +225,10 @@ export function fakeGitHub(
     async defaultBranch(repo) {
       step("defaultBranch", repo);
       return options.defaultBranch ?? "main";
+    },
+    async usesMergeQueue(repo, branch) {
+      step("usesMergeQueue", repo, ` ${branch}`);
+      return options.mergeQueue ?? false;
     },
     async pullRequest(pr: PrRef) {
       step("pullRequest", pr, `#${pr.number}`);
