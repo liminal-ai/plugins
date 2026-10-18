@@ -248,7 +248,7 @@ export class GhGitHub implements GitHub {
         return {
           id: comment.id as number,
           author: string(user.login, "comment.user.login"),
-          isBot: user.type === "Bot",
+          isBot: string(user.type, "comment.user.type") === "Bot",
           body: string(comment.body, "comment.body"),
           createdAt: string(comment.created_at, "comment.created_at"),
           updatedAt: string(comment.updated_at, "comment.updated_at"),

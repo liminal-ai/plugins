@@ -254,6 +254,22 @@ for (const [label, name, value] of [
     }),
   ],
   [
+    "a comment whose author has no account type",
+    "comments.json",
+    [
+      [
+        {
+          id: 9,
+          user: { login: "someone" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
+  ],
+  [
     "a comment with no body",
     "comments.json",
     [
