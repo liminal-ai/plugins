@@ -8,7 +8,7 @@ export const PR_COMMIT_STATUS_QUERY =
 export const PR_CHECK_ROLLUP_QUERY =
   "\nquery PrCheckRollup($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 1) {\n        nodes {\n          commit {\n            statusCheckRollup {\n              contexts(first: 100, after: $after) {\n                pageInfo {\n                  hasNextPage\n                  endCursor\n                }\n                nodes {\n                  __typename\n                  ... on CheckRun {\n                    name\n                    status\n                    conclusion\n                    detailsUrl\n                  }\n                  ... on StatusContext {\n                    context\n                    state\n                    targetUrl\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
 
-interface CommandResult {
+export interface CommandResult {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -27,9 +27,9 @@ export class ChecksUnavailable extends WatcherQueryError {
     this.name = "ChecksUnavailable";
   }
 }
-const firstLine = (value: string): string =>
+export const firstLine = (value: string): string =>
   value.trim().split(/\r?\n/, 1)[0]?.slice(0, 240) ?? "";
-function run(argv: readonly [string, ...string[]]): Promise<CommandResult> {
+export function run(argv: readonly [string, ...string[]]): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), {
       stdio: ["ignore", "pipe", "pipe"],
@@ -59,7 +59,7 @@ function parseJson(text: string, label: string): unknown {
     });
   }
 }
-async function runJson(argv: readonly [string, ...string[]]): Promise<unknown> {
+export async function runJson(argv: readonly [string, ...string[]]): Promise<unknown> {
   const result = await run(argv);
   if (result.code !== 0)
     throw new WatcherQueryError({
@@ -92,15 +92,15 @@ function missing(path: string, value?: unknown): never {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function record(value: unknown, path: string): Record<string, unknown> {
+export function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) missing(path, value);
   return value;
 }
-function list(value: unknown, path: string): readonly unknown[] {
+export function list(value: unknown, path: string): readonly unknown[] {
   if (!Array.isArray(value)) missing(path, value);
   return value;
 }
-function at(value: unknown, path: readonly string[]): unknown {
+export function at(value: unknown, path: readonly string[]): unknown {
   let current = value;
   for (const key of path) {
     const object = record(current, path.join("."));
@@ -109,11 +109,11 @@ function at(value: unknown, path: readonly string[]): unknown {
   }
   return current;
 }
-function string(value: unknown, path: string): string {
+export function string(value: unknown, path: string): string {
   if (typeof value !== "string") missing(path, value);
   return value;
 }
-const optionalString = (value: unknown, path: string): string | null =>
+export const optionalString = (value: unknown, path: string): string | null =>
   value === null ? null : string(value, path);
 function enumValue<const V extends readonly string[]>(
   value: unknown,
@@ -161,7 +161,7 @@ const reviewDecision = (value: unknown): T.ReviewDecision =>
     REVIEW_DECISIONS,
     "pull request.reviewDecision"
   );
-function parseRemote(value: string): T.Repository | null {
+export function parseRemote(value: string): T.Repository | null {
   let normalized = value.trim();
   if (normalized.startsWith("git@github.com:"))
     normalized = `https://github.com/${normalized.slice(15)}`;
