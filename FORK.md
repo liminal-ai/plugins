@@ -1,5 +1,7 @@
 # Fork maintenance: liminal-ai/pstack-lim
 
+Read this file before you merge from upstream, push, open a PR, or merge one.
+
 Fork of `cursor/plugins`, default branch `lim`. Fork point: upstream `11713c6` (pstack 0.15.17). Last synced: upstream `101b274` (pstack 0.15.25), recorded in `FORK-SYNC-LOG.md`. Install only from `pstack/`, never the repo root; for the `/orchestrate` name clash see `poteto-help`. Role-file setup lives in `setup-pstack`.
 
 ## Upstream drift
