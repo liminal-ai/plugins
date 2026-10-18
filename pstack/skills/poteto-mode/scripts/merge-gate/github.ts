@@ -82,7 +82,6 @@ query MergeQueue($owner: String!, $repo: String!, $branch: String!) {
 `;
 
 /** Only "User" counts as a person; the others are GitHub's documented non-person account types. */
-const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/;
 const ACCOUNT_TYPES = new Set(["User", "Bot", "Organization", "Mannequin"]);
 
 const repoName = (repo: Repository): string => `${repo.owner}/${repo.repo}`;
@@ -256,9 +255,9 @@ export class GhGitHub implements GitHub {
         if (seen.has(id)) readError(`comment ${id} appears twice`);
         seen.add(id);
         const login = string(user.login, "comment.user.login");
-        if (!GITHUB_LOGIN.test(login))
+        if (!/^\S+$/.test(login))
           readError(
-            `comment ${id} has a login GitHub would not issue: ${JSON.stringify(login)}`
+            `comment ${id} has an empty or blank login: ${JSON.stringify(login)}`
           );
         const type = string(user.type, "comment.user.type");
         if (!ACCOUNT_TYPES.has(type))

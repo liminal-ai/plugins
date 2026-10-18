@@ -378,6 +378,24 @@ for (const [label, name, value] of [
   });
 }
 
+it("reads a comment from an Enterprise managed user whose login has an underscore", async () => {
+  const pages = JSON.parse(readFileSync(join(dir, "comments.json"), "utf8"));
+  const result = await checkWith("comments.json", [
+    ...pages,
+    [
+      {
+        id: 3,
+        user: { login: "mona-cat_octo", type: "User" },
+        body: "looks good",
+        created_at: "2026-01-01T00:00:02Z",
+        updated_at: "2026-01-01T00:00:02Z",
+        html_url: "https://github.com/owner/repo/pull/1#issuecomment-3",
+      },
+    ],
+  ]);
+  expect(result.exit).toBe(0);
+});
+
 it("reads an explicit null statusCheckRollup as no checks", async () => {
   const result = await checkWith(
     "checks.json",
