@@ -555,7 +555,8 @@ describe("merge-gate", () => {
       const bot = comment(
         `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`,
         "some-app[bot]",
-        true
+        true,
+        "MEMBER"
       );
       const result = await gate(withHead(repos.instructionHead, bot));
       expect(result.exit).toBe(1);
