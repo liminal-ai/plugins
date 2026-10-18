@@ -37,7 +37,7 @@ Move any Accepted item that a lint rule, script, metadata flag, or runtime check
 
 ## 5. Save
 
-Everything this reflect produced goes in this thread's home in the pstack store. `node ~/.agents/skills/reflect/scripts/retro.mjs reflect <thread-id> --title "<thread title>" --project <project>` creates a folder there for this reflect and prints its path. Write each reviewer's output in it as `judgment.md`, `tooling.md` and `divergent.md`, the synthesizer's as `synthesis.md`, and the Backlog items as `backlog.md`. Then run `retro.mjs register <thread-id> --reflected <that folder>`, adding `--trail <path>` for each decision log or process record this thread kept. The script copies a trail that could vanish into the home and links one that is safe.
+Everything this reflect produced goes in this thread's home in the pstack store. `node ~/.agents/skills/reflect/scripts/retro.mjs reflect <thread-id> --title "<thread title>" --project <project>` creates a folder there for this reflect and prints its path. Write each reviewer's output in it as `judgment.md`, `tooling.md` and `divergent.md`, the synthesizer's as `synthesis.md`, and the Backlog items as `backlog.md`. Then run `retro.mjs register <thread-id> --reflected <that folder>`, adding `--trail <path>` for each decision log or process record this thread kept. The script copies a trail that could vanish into the home and links one that is safe. The store's `retro/` folder is a git repo backed up to the private repo `liminal-ai/pstack-retros`. The script commits and pushes it after each write, so never commit or push it yourself.
 
 ## 6. Apply
 
