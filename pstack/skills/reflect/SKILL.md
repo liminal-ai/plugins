@@ -37,11 +37,11 @@ Move any Accepted item that a lint rule, script, metadata flag, or runtime check
 
 ## 5. Save
 
-Everything this reflect produced goes in this thread's home in the pstack store. `node ~/.agents/skills/reflect/scripts/retro.mjs register <thread-id> --title "<thread title>" --project <project>` creates the home and prints its path. Write each reviewer's output there as `judgment.md`, `tooling.md` and `divergent.md`, the synthesizer's as `synthesis.md`, and the Backlog items as `backlog.md`. Then run `register <thread-id> --reflected`, adding `--trail <path>` for each decision log or process record this thread kept. The script copies a trail that could vanish into the home and links one that is safe.
+Everything this reflect produced goes in this thread's home in the pstack store. `node ~/.agents/skills/reflect/scripts/retro.mjs reflect <thread-id> --title "<thread title>" --project <project>` creates a folder there for this reflect and prints its path. Write each reviewer's output in it as `judgment.md`, `tooling.md` and `divergent.md`, the synthesizer's as `synthesis.md`, and the Backlog items as `backlog.md`. Then run `retro.mjs register <thread-id> --reflected <that folder>`, adding `--trail <path>` for each decision log or process record this thread kept. The script copies a trail that could vanish into the home and links one that is safe.
 
 ## 6. Apply
 
-Present the synthesizer's full Accepted / Rejected / Backlog output and wait for explicit approval before applying any Accepted edit. The user picks the subset and may redirect routings. Skill changes affect every future agent in the org. Do not auto-apply. Write the user's decisions, in their own words, to `decisions.md` in the home.
+Present the synthesizer's full Accepted / Rejected / Backlog output and wait for explicit approval before applying any Accepted edit. The user picks the subset and may redirect routings. Skill changes affect every future agent in the org. Do not auto-apply. Write the user's decisions, in their own words, to `decisions.md` in the reflect's folder.
 
 Backlog items need no approval. They are already in `backlog.md`, so tell the user its path. Nothing files tickets.
 
@@ -62,9 +62,9 @@ Short list, no preamble:
 
 - Edits applied: `<skill path>`. What changed, one line each.
 - New skills created: `<skill path>`. One line each (rare).
-- Saved to `<home>`. Backlog in its `backlog.md`: `<item title>` (`<tags>`). One line each.
+- Saved to `<reflect folder>`. Backlog in its `backlog.md`: `<item title>` (`<tags>`). One line each.
 - Dropped: one line per rejected finding + reason from the synthesizer.
 
 ## Retro rounds
 
-A retro round reviews several threads' reflects together. `retro.mjs status` writes `REGISTRY.md` in the store's `retro/` folder and says whether a round is due. `retro.mjs open` copies the waiting threads' homes into a new round folder, whose `README.md` lists every input. Read them, then write `synthesis.md`, the user's decisions in their own words as `decisions.md`, and `merge-gate.md` on how the merge gate script has done since the last round. `retro.mjs close <round>` refuses until all three exist.
+A retro round reviews several threads' reflects together. `retro.mjs status` writes `REGISTRY.md` in the store's `retro/` folder and says whether a round is due. `retro.mjs open` copies the homes of the threads with waiting reflects into a new round folder, whose `README.md` lists every input. Read them, then write `synthesis.md`, the user's decisions in their own words as `decisions.md`, and `merge-gate.md` on how the merge gate script has done since the last round. `retro.mjs close <round>` refuses until all three exist.

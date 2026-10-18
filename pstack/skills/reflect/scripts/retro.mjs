@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 const USAGE = `usage: retro.mjs <command>
-  register <thread-id> [--title T] [--project P] [--trail PATH]... [--reflected]
+  reflect <thread-id> [--title T] [--project P]
+  register <thread-id> [--title T] [--project P] [--trail PATH]... [--reflected DIR]
   status
   open [--threads ID,ID] [--input PATH]... [--at YYYY-MM-DD] [--earlier REASON]
   close <round> [--at YYYY-MM-DD]
@@ -19,7 +21,7 @@ const DUE_COUNT = 3;
 const DUE_AGE_DAYS = 7;
 const ASK_QUIET_HOURS = 20;
 const STALE_ROUND_DAYS = 7;
-const REGISTRY_REWRITES = 5;
+const LOCK_WAIT_MS = Number(process.env.RETRO_LOCK_WAIT_MS ?? 30000);
 const ROUND_OUTPUTS = ["synthesis.md", "decisions.md", "merge-gate.md"];
 const SELF = "node ~/.agents/skills/reflect/scripts/retro.mjs";
 
@@ -39,6 +41,7 @@ function storeDir() {
 const STORE = storeDir();
 const RETRO = join(STORE, "retro");
 const ROUNDS = join(RETRO, "rounds");
+const LOCK = join(RETRO, ".lock");
 
 function now() {
   return process.env.RETRO_NOW ? new Date(process.env.RETRO_NOW) : new Date();
@@ -52,16 +55,24 @@ function stamp(date) {
 }
 
 const day = (date) => stamp(date).slice(0, 10);
+const compact = (date) => stamp(date).slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
 
 function atOrNow(at) {
   if (!at) return now();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) refuse(`--at takes YYYY-MM-DD, got ${at}`);
-  return new Date(`${at}T12:00:00`);
+  const date = new Date(`${at}T12:00:00`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(at) || Number.isNaN(date.getTime()) || day(date) !== at) refuse(`--at takes a real date as YYYY-MM-DD, got ${at}`);
+  return date;
+}
+
+function unique(path) {
+  let candidate = path;
+  for (let n = 2; existsSync(candidate); n++) candidate = `${path}-${n}`;
+  return candidate;
 }
 
 function writeAtomic(path, text) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, text);
   renameSync(tmp, path);
 }
@@ -74,6 +85,49 @@ function readJson(path, problems) {
   } catch (err) {
     problems.push(`${path} is unreadable: ${err.message}`);
     return null;
+  }
+}
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
+function withLock(fn) {
+  mkdirSync(RETRO, { recursive: true });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(LOCK);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      const holder = Number(existsSync(join(LOCK, "pid")) ? readFileSync(join(LOCK, "pid"), "utf-8") : NaN);
+      if (Number.isInteger(holder) && !alive(holder)) {
+        rmSync(LOCK, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() > deadline) refuse(`another retro command holds ${LOCK} (pid ${holder || "unknown"})`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+  writeFileSync(join(LOCK, "pid"), String(process.pid));
+  try {
+    return fn();
+  } finally {
+    rmSync(LOCK, { recursive: true, force: true });
   }
 }
 
@@ -101,13 +155,18 @@ function load() {
   return { threads, rounds, problems };
 }
 
+function pendingReflects(thread, rounds) {
+  const taken = new Set(rounds.flatMap((r) => r.reflects ?? []));
+  return thread.reflects.filter((c) => !taken.has(c.dir));
+}
+
 function statusOf(thread, rounds) {
-  const taken = rounds.filter((r) => r.threads.includes(thread.thread));
-  const last = taken.at(-1);
-  if (last && !last.closedAt) return { kind: "in-round", round: last.round };
-  const reflectedSince = thread.reflectedAt && (!last || new Date(thread.reflectedAt) > new Date(last.openedAt));
-  if (reflectedSince) return { kind: "waiting" };
-  if (last) return { kind: "retrod", round: last.round };
+  const inRounds = rounds.filter((r) => r.threads.includes(thread.thread));
+  const open = inRounds.find((r) => !r.closedAt);
+  if (open) return { kind: "in-round", round: open.round };
+  const pending = pendingReflects(thread, rounds);
+  if (pending.length) return { kind: "waiting", since: Math.min(...pending.map((c) => new Date(c.completedAt).getTime())) };
+  if (inRounds.length) return { kind: "retrod", round: inRounds.at(-1).round };
   return { kind: "no-reflect" };
 }
 
@@ -118,13 +177,11 @@ function dueReason({ threads, rounds }, at) {
     const reason = `round ${open.round} has been open ${openDays} day${openDays === 1 ? "" : "s"}`;
     return { due: openDays >= STALE_ROUND_DAYS, reason: openDays >= STALE_ROUND_DAYS ? `${reason}; finish and close it` : reason };
   }
-  const waiting = [...threads.values()].filter((t) => statusOf(t, rounds).kind === "waiting");
+  const waiting = [...threads.values()].map((t) => statusOf(t, rounds)).filter((s) => s.kind === "waiting");
   if (waiting.length === 0) return { due: false, reason: "no reflects waiting" };
-  const oldest = Math.min(...waiting.map((t) => new Date(t.reflectedAt).getTime()));
-  const ageDays = Math.floor((at.getTime() - oldest) / DAY);
+  const ageDays = Math.floor((at.getTime() - Math.min(...waiting.map((s) => s.since))) / DAY);
   const summary = `${waiting.length} reflect${waiting.length === 1 ? "" : "s"} waiting, oldest ${ageDays} day${ageDays === 1 ? "" : "s"}`;
-  const due = waiting.length >= DUE_COUNT || ageDays >= DUE_AGE_DAYS;
-  return { due, reason: summary };
+  return { due: waiting.length >= DUE_COUNT || ageDays >= DUE_AGE_DAYS, reason: summary };
 }
 
 function within(path, dir) {
@@ -139,61 +196,93 @@ function real(path) {
   }
 }
 
-function trailMode(abs) {
-  if (within(abs, real(STORE))) return { mode: "linked" };
-  if (within(abs, real(tmpdir())) || within(abs, "/tmp")) return { mode: "copied" };
-  const dir = statSync(abs).isDirectory() ? abs : dirname(abs);
+function walk(dir) {
+  return readdirSync(dir).flatMap((name) => {
+    const p = join(dir, name);
+    return lstatSync(p).isDirectory() ? [p, ...walk(p)] : [p];
+  });
+}
+
+function trailMode(target) {
+  const hasLinks = statSync(target).isDirectory() && walk(target).some((p) => lstatSync(p).isSymbolicLink());
+  if (hasLinks) return { mode: "copied" };
+  if (within(target, real(STORE))) return { mode: "linked" };
+  if (within(target, real(tmpdir())) || within(target, "/tmp")) return { mode: "copied" };
+  const dir = statSync(target).isDirectory() ? target : dirname(target);
   const git = (...args) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8" });
   const gitDir = git("rev-parse", "--path-format=absolute", "--git-dir");
   if (gitDir.status !== 0) return { mode: "copied" };
   const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
   if (real(gitDir.stdout.trim()) !== real(common.stdout.trim())) return { mode: "copied" };
-  const tracked = git("ls-files", "--", abs).stdout.trim() !== "";
-  const dirty = git("status", "--porcelain", "--ignored", "--", abs).stdout.trim() !== "";
+  const tracked = git("ls-files", "--", target).stdout.trim() !== "";
+  const dirty = git("status", "--porcelain", "--ignored", "--", target).stdout.trim() !== "";
   if (!tracked || dirty) return { mode: "copied" };
-  return { mode: "linked", commit: git("log", "-1", "--format=%H", "--", abs).stdout.trim() };
+  return { mode: "linked", commit: git("log", "-1", "--format=%H", "--", target).stdout.trim() };
 }
 
-function copyDest(home, trails, source) {
-  const taken = new Set(trails.filter((t) => t.source !== source).map((t) => t.path));
-  const base = basename(source);
-  const names = [base, `${basename(dirname(source))}-${base}`];
-  for (let n = 2; names.length < 100; n++) names.push(`${n}-${base}`);
-  return names.map((name) => join(home, "trails", name)).find((dest) => !taken.has(dest));
+function digest(path) {
+  const hash = createHash("sha256");
+  const visit = (p, rel) => {
+    if (statSync(p).isDirectory()) {
+      hash.update(`d:${rel}\n`);
+      for (const name of readdirSync(p).sort()) visit(join(p, name), join(rel, name));
+    } else {
+      hash.update(`f:${rel}\n`).update(readFileSync(p));
+    }
+  };
+  visit(path, ".");
+  return hash.digest("hex");
 }
 
+function copyResolved(src, dest) {
+  if (statSync(src).isDirectory()) {
+    mkdirSync(dest);
+    for (const name of readdirSync(src)) copyResolved(join(src, name), join(dest, name));
+  } else {
+    copyFileSync(src, dest);
+  }
+}
+
+function current(rec, source) {
+  return rec.trails.filter((t) => t.source === source).at(-1);
+}
+
+// Copies are never overwritten: a changed source gets a new version beside the old ones.
 function addTrail(home, rec, path, at) {
   const source = resolve(path);
-  const existing = rec.trails.find((t) => t.source === source);
+  const last = current(rec, source);
   if (!existsSync(source)) {
-    if (existing?.mode === "copied" && existsSync(existing.path)) {
-      console.error(`warning: ${source} is gone; keeping the copy at ${existing.path}`);
+    if (last?.mode === "copied" && existsSync(last.path)) {
+      console.error(`warning: ${source} is gone; keeping the copy at ${last.path}`);
       return;
     }
     refuse(`trail not found: ${source}`);
   }
-  const { mode, commit } = trailMode(real(source));
-  let entry = { path: source, source, mode, at: stamp(at) };
-  if (mode === "copied") {
-    const dest = existing?.mode === "copied" ? existing.path : copyDest(home, rec.trails, source);
-    mkdirSync(dirname(dest), { recursive: true });
-    const staged = `${dest}.tmp-${process.pid}`;
-    cpSync(source, staged, { recursive: true });
-    rmSync(dest, { recursive: true, force: true });
-    renameSync(staged, dest);
-    entry = { ...entry, path: dest };
-  } else if (commit) {
-    entry.commit = commit;
+  const target = real(source);
+  const { mode, commit } = trailMode(target);
+  if (mode === "linked") {
+    rec.trails = rec.trails.filter((t) => t.source !== source).concat({ source, mode, path: target, ...(commit && { commit }), at: stamp(at) });
+    return;
   }
-  rec.trails = rec.trails.filter((t) => t.source !== source).concat(entry);
+  let sum;
+  try {
+    sum = digest(source);
+  } catch (err) {
+    refuse(`cannot read every file under ${source}: ${err.message}`);
+  }
+  if (last?.mode === "copied" && last.sha256 === sum && existsSync(last.path)) return;
+  const dest = unique(join(home, "trails", `${compact(at)}-${basename(source)}`));
+  const staged = `${dest}.tmp-${process.pid}`;
+  mkdirSync(dirname(dest), { recursive: true });
+  rmSync(staged, { recursive: true, force: true });
+  copyResolved(source, staged);
+  renameSync(staged, dest);
+  rec.trails.push({ source, mode, path: dest, sha256: sum, at: stamp(at) });
 }
 
-function cmdRegister(args) {
-  const id = args._[0];
-  if (!UUID.test(id ?? "")) refuse(`register needs a T3 thread id (a UUID), got ${id ?? "nothing"}`);
-  const at = now();
-  const home = join(RETRO, id);
-  const file = join(home, "thread.json");
+function threadRecord(id, args, at) {
+  if (!UUID.test(id ?? "")) refuse(`needs a T3 thread id (a UUID), got ${id ?? "nothing"}`);
+  const file = join(RETRO, id, "thread.json");
   const problems = [];
   const rec = (existsSync(file) && readJson(file, problems)) || {
     thread: id,
@@ -201,19 +290,37 @@ function cmdRegister(args) {
     project: null,
     firstRegistered: stamp(at),
     lastRegistered: null,
-    reflectedAt: null,
+    reflects: [],
     trails: [],
   };
   if (problems.length) refuse(problems.join("\n"));
   if (args.title) rec.title = args.title;
   if (args.project) rec.project = args.project;
-  mkdirSync(home, { recursive: true });
+  rec.lastRegistered = stamp(at);
+  mkdirSync(join(RETRO, id), { recursive: true });
+  return { rec, file, home: join(RETRO, id) };
+}
+
+function cmdReflect(args) {
+  const at = now();
+  const { rec, file, home } = threadRecord(args._[0], args, at);
+  const dir = unique(join(home, `reflect-${compact(at)}`));
+  mkdirSync(dir);
+  writeJson(file, rec);
+  refreshRegistry();
+  console.log(dir);
+}
+
+function cmdRegister(args) {
+  const at = now();
+  const { rec, file, home } = threadRecord(args._[0], args, at);
   for (const trail of args.trail) addTrail(home, rec, trail, at);
   if (args.reflected) {
-    if (!existsSync(join(home, "synthesis.md"))) refuse(`write the reflect outputs first: ${join(home, "synthesis.md")} is missing`);
-    rec.reflectedAt = stamp(at);
+    const dir = resolve(args.reflected);
+    if (!within(dir, home)) refuse(`--reflected takes a folder inside ${home}, got ${dir}`);
+    if (!isFile(join(dir, "synthesis.md"))) refuse(`write the reflect outputs first: ${join(dir, "synthesis.md")} is missing`);
+    if (!rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
   }
-  rec.lastRegistered = stamp(at);
   writeJson(file, rec);
   refreshRegistry();
   console.log(home);
@@ -223,21 +330,24 @@ function threadLabel(t) {
   return `[${t.title ?? t.thread.slice(0, 8)}](t3-thread://v1/${t.thread})`;
 }
 
+function currentTrails(t) {
+  return [...new Set(t.trails.map((x) => x.source))].map((s) => current(t, s));
+}
+
 function trailsCell(t) {
-  return t.trails.map((x) => `${x.mode}: \`${x.path}\``).join("<br>") || "none";
+  return currentTrails(t).map((x) => `${x.mode}: \`${x.path}\``).join("<br>") || "none";
 }
 
 function findProblems({ threads, rounds, problems }) {
   const out = [...problems];
   for (const t of threads.values()) {
-    const home = join(RETRO, t.thread);
-    for (const x of t.trails) if (!existsSync(x.path)) out.push(`${t.thread}: trail missing at ${x.path}`);
-    if (t.reflectedAt && !existsSync(join(home, "synthesis.md"))) out.push(`${t.thread}: reflected but ${home}/synthesis.md is missing`);
+    for (const x of currentTrails(t)) if (!existsSync(x.path)) out.push(`${t.thread}: trail missing at ${x.path}`);
+    for (const c of t.reflects) if (!isFile(join(c.dir, "synthesis.md"))) out.push(`${t.thread}: reflect ${c.dir} has no synthesis.md`);
   }
   for (const r of rounds) {
     for (const id of r.threads) if (!threads.has(id)) out.push(`round ${r.round}: thread ${id} is not registered`);
     const required = r.earlier ? ["synthesis.md"] : ROUND_OUTPUTS;
-    if (r.closedAt) for (const f of required) if (!existsSync(join(ROUNDS, r.round, f))) out.push(`round ${r.round}: closed without ${f}`);
+    if (r.closedAt) for (const f of required) if (!isFile(join(ROUNDS, r.round, f))) out.push(`round ${r.round}: closed without ${f}`);
   }
   if (rounds.filter((r) => !r.closedAt).length > 1) out.push("more than one round is open");
   if (existsSync(ROUNDS)) {
@@ -253,6 +363,8 @@ function renderRegistry(state, at) {
   const all = [...threads.values()].sort((a, b) => a.firstRegistered.localeCompare(b.firstRegistered));
   const by = (kind) => all.filter((t) => statusOf(t, rounds).kind === kind);
   const due = dueReason(state, at);
+  const table = (rows, head) => (rows.length ? [head, head.replace(/[^|]+/g, "---"), ...rows] : ["None."]);
+  const decided = (t) => (pendingReflects(t, rounds).some((c) => isFile(join(c.dir, "decisions.md"))) ? "yes" : "no");
   const lines = [
     "# Retro registry",
     "",
@@ -262,13 +374,9 @@ function renderRegistry(state, at) {
     "",
     "## Waiting for a round",
     "",
-  ];
-  const table = (rows, head) => (rows.length ? [head, head.replace(/[^|]+/g, "---"), ...rows] : ["None."]);
-  const decided = (t) => (existsSync(join(RETRO, t.thread, "decisions.md")) ? "yes" : "no");
-  lines.push(
     ...table(
-      by("waiting").map((t) => `| ${threadLabel(t)} | ${t.project ?? "?"} | ${t.reflectedAt.slice(0, 10)} | ${decided(t)} | ${trailsCell(t)} |`),
-      "| thread | project | reflected | decisions | trails |",
+      by("waiting").map((t) => `| ${threadLabel(t)} | ${t.project ?? "?"} | ${pendingReflects(t, rounds).map((c) => `\`${c.dir}\``).join("<br>")} | ${decided(t)} | ${trailsCell(t)} |`),
+      "| thread | project | reflects | decisions | trails |",
     ),
     "",
     "## Registered, no reflect yet",
@@ -287,42 +395,38 @@ function renderRegistry(state, at) {
       }),
       "| round | state | threads | folder |",
     ),
-  );
+  ];
   const problems = findProblems(state);
   if (problems.length) lines.push("", "## Problems", "", ...problems.map((p) => `- ${p}`));
   return `${lines.join("\n")}\n`;
 }
 
 function refreshRegistry() {
-  const path = join(RETRO, "REGISTRY.md");
-  for (let i = 0; i < REGISTRY_REWRITES; i++) {
-    const at = now();
-    const text = renderRegistry(load(), at);
-    writeAtomic(path, text);
-    if (renderRegistry(load(), at) === text) return text;
-  }
-  return readFileSync(path, "utf-8");
+  const text = renderRegistry(load(), now());
+  writeAtomic(join(RETRO, "REGISTRY.md"), text);
+  return text;
 }
 
 function cmdStatus() {
   process.stdout.write(refreshRegistry());
 }
 
-function roundReadme(round, state, extra) {
+function roundReadme(round, state) {
   const lines = [
     `# Retro round ${round.round}`,
     "",
-    round.earlier ? `An earlier retro recorded after the fact: ${round.earlier}.` : "Inputs below are copied into `inputs/` so later changes to a thread's home do not alter this round.",
+    round.earlier ? `An earlier retro recorded after the fact: ${round.earlier}.` : "Each thread's home is copied into `inputs/` so later changes do not alter this round.",
     "",
   ];
   for (const id of round.threads) {
     const t = state.threads.get(id);
-    lines.push(`## ${threadLabel(t)}`, "", `Project: ${t.project ?? "?"}. Reflected: ${t.reflectedAt ?? "no"}. Home: \`${join(RETRO, id)}\`.`, "");
-    lines.push(`- Copied inputs: \`inputs/${id}/\``);
-    for (const x of t.trails.filter((x) => x.mode === "linked")) lines.push(`- Linked trail: \`${x.path}\`${x.commit ? ` at ${x.commit.slice(0, 12)}` : ""}`);
+    const home = join(RETRO, id);
+    lines.push(`## ${threadLabel(t)}`, "", `Project: ${t.project ?? "?"}. Home: \`${home}\`, copied to \`inputs/${id}/\`.`, "");
+    for (const dir of round.reflects.filter((d) => within(d, home))) lines.push(`- Reflect: \`inputs/${id}/${relative(home, dir) || "."}\``);
+    for (const x of currentTrails(t).filter((x) => x.mode === "linked")) lines.push(`- Linked trail: \`${x.path}\`${x.commit ? ` at ${x.commit.slice(0, 12)}` : ""}`);
     lines.push("");
   }
-  if (extra.length) lines.push("## Other inputs", "", ...extra.map((p) => `- \`${p}\``), "");
+  if (round.inputs.length) lines.push("## Other inputs", "", ...round.inputs.map((p) => `- \`${p}\``), "");
   lines.push(
     "## Outputs, needed before close",
     "",
@@ -336,14 +440,13 @@ function roundReadme(round, state, extra) {
   return lines.join("\n");
 }
 
-function gatherBacklog(ids, threads) {
+function gatherBacklog(entries, threads) {
   const parts = [];
-  for (const id of ids) {
-    const file = join(RETRO, id, "backlog.md");
-    if (!existsSync(file)) continue;
-    parts.push(`## ${threadLabel(threads.get(id))}`, "", readFileSync(file, "utf-8").trim(), "");
+  for (const { id, dirs } of entries) {
+    const files = dirs.map((d) => join(d, "backlog.md")).filter(isFile);
+    if (files.length) parts.push(`## ${threadLabel(threads.get(id))}`, "", ...files.map((f) => readFileSync(f, "utf-8").trim()), "");
   }
-  return parts.length ? `# Backlog\n\n${parts.join("\n")}` : "# Backlog\n\nNo thread in this set has a backlog.md.\n";
+  return parts.length ? `# Backlog\n\n${parts.join("\n")}` : "# Backlog\n\nNo reflect in this set has a backlog.md.\n";
 }
 
 function cmdOpen(args) {
@@ -351,9 +454,10 @@ function cmdOpen(args) {
   const open = state.rounds.find((r) => !r.closedAt);
   if (open) refuse(`round ${open.round} is open; close it first`);
   const at = atOrNow(args.at);
-  const ids = args.threads !== undefined
-    ? [...new Set(args.threads.split(",").map((s) => s.trim()).filter(Boolean))]
-    : [...state.threads.values()].filter((t) => statusOf(t, state.rounds).kind === "waiting").map((t) => t.thread);
+  const ids =
+    args.threads !== undefined
+      ? [...new Set(args.threads.split(",").map((s) => s.trim()).filter(Boolean))]
+      : [...state.threads.values()].filter((t) => statusOf(t, state.rounds).kind === "waiting").map((t) => t.thread);
   for (const id of ids) {
     const t = state.threads.get(id);
     if (!t) refuse(`thread ${id} is not registered; run register first`);
@@ -362,15 +466,13 @@ function cmdOpen(args) {
   }
   if (ids.length === 0 && !args.earlier) refuse("no threads are waiting; pass --threads to choose some");
   for (const p of args.input) if (!existsSync(p)) refuse(`input not found: ${p}`);
-  let id = day(at);
-  for (let n = 2; existsSync(join(ROUNDS, id)); n++) id = `${day(at)}-${n}`;
-  const dir = join(ROUNDS, id);
+  const reflects = ids.flatMap((id) => pendingReflects(state.threads.get(id), state.rounds).map((c) => c.dir));
+  const dir = unique(join(ROUNDS, day(at)));
+  const round = { round: basename(dir), openedAt: stamp(at), closedAt: null, threads: ids, reflects, inputs: args.input.map((p) => resolve(p)), earlier: args.earlier ?? null };
   mkdirSync(dir, { recursive: true });
-  for (const tid of ids) cpSync(join(RETRO, tid), join(dir, "inputs", tid), { recursive: true });
-  const extra = args.input.map((p) => resolve(p));
-  const round = { round: id, openedAt: stamp(at), closedAt: null, threads: ids, inputs: extra, earlier: args.earlier ?? null };
-  writeAtomic(join(dir, "README.md"), roundReadme(round, state, extra));
-  writeAtomic(join(dir, "backlog.md"), gatherBacklog(ids, state.threads));
+  for (const id of ids) cpSync(join(RETRO, id), join(dir, "inputs", id), { recursive: true });
+  writeAtomic(join(dir, "README.md"), roundReadme(round, state));
+  writeAtomic(join(dir, "backlog.md"), gatherBacklog(ids.map((id) => ({ id, dirs: reflects.filter((d) => within(d, join(RETRO, id))) })), state.threads));
   writeJson(join(dir, "round.json"), round);
   refreshRegistry();
   console.log(dir);
@@ -385,7 +487,7 @@ function cmdClose(args) {
   if (!round) refuse(problems.join("\n"));
   if (round.closedAt) refuse(`round ${id} closed at ${round.closedAt}`);
   const required = round.earlier ? ["synthesis.md"] : ROUND_OUTPUTS;
-  const missing = required.filter((f) => !existsSync(join(ROUNDS, id, f)));
+  const missing = required.filter((f) => !isFile(join(ROUNDS, id, f)));
   if (missing.length) refuse(`round ${id} is missing ${missing.join(", ")} in ${join(ROUNDS, id)}`);
   round.closedAt = stamp(atOrNow(args.at));
   writeJson(file, round);
@@ -395,10 +497,11 @@ function cmdClose(args) {
 
 function cmdBacklog(args) {
   const { threads, rounds } = load();
-  const ids = [...threads.values()].filter((t) => args.all || statusOf(t, rounds).kind === "waiting").map((t) => t.thread);
-  process.stdout.write(gatherBacklog(ids, threads));
+  const entries = [...threads.values()].map((t) => ({ id: t.thread, dirs: (args.all ? t.reflects : pendingReflects(t, rounds)).map((c) => c.dir) }));
+  process.stdout.write(gatherBacklog(entries, threads));
 }
 
+// Queued scheduled runs fire right after a late answer, so the quiet window starts at the later of the ask and the answer.
 function cmdRemind(args) {
   const at = now();
   const file = join(RETRO, "reminder.json");
@@ -415,8 +518,8 @@ function cmdRemind(args) {
   console.log(`ASK: ${reason}`);
 }
 
-const FLAGS = new Set(["reflected", "all", "answered"]);
-const OPTIONS = new Set(["title", "project", "trail", "threads", "input", "at", "earlier"]);
+const FLAGS = new Set(["all", "answered"]);
+const OPTIONS = new Set(["title", "project", "trail", "threads", "input", "at", "earlier", "reflected"]);
 
 function parse(argv) {
   const args = { _: [], trail: [], input: [] };
@@ -440,7 +543,7 @@ function parse(argv) {
   return args;
 }
 
-const COMMANDS = { register: cmdRegister, status: cmdStatus, open: cmdOpen, close: cmdClose, backlog: cmdBacklog, remind: cmdRemind };
+const COMMANDS = { reflect: cmdReflect, register: cmdRegister, status: cmdStatus, open: cmdOpen, close: cmdClose, backlog: cmdBacklog, remind: cmdRemind };
 
 try {
   const [command, ...rest] = process.argv.slice(2);
@@ -448,7 +551,9 @@ try {
     console.error(USAGE);
     process.exit(command ? 1 : 0);
   }
-  COMMANDS[command](parse(rest));
+  const args = parse(rest);
+  if (command === "backlog") COMMANDS[command](args);
+  else withLock(() => COMMANDS[command](args));
 } catch (err) {
   if (!(err instanceof Refusal)) throw err;
   console.error(`retro: ${err.message}`);

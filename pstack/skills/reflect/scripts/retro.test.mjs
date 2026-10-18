@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,20 +14,37 @@ const C = "cccccccc-0000-4000-8000-000000000003";
 function sandbox(t) {
   const store = mkdtempSync(join(tmpdir(), "retro-store-"));
   t.after(() => rmSync(store, { recursive: true, force: true }));
-  const run = (args, nowIso) => {
-    const env = { ...process.env, PSTACK_STORE: store };
-    if (nowIso) env.RETRO_NOW = nowIso;
-    else delete env.RETRO_NOW;
-    const r = spawnSync(process.execPath, [script, ...args], { encoding: "utf-8", env });
+  const env = (nowIso, extra = {}) => {
+    const e = { ...process.env, PSTACK_STORE: store, ...extra };
+    if (nowIso) e.RETRO_NOW = nowIso;
+    else delete e.RETRO_NOW;
+    return e;
+  };
+  const run = (args, nowIso, extra) => {
+    const r = spawnSync(process.execPath, [script, ...args], { encoding: "utf-8", env: env(nowIso, extra) });
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
   const home = (id) => join(store, "retro", id);
-  const reflect = (id, nowIso) => {
-    run(["register", id], nowIso);
-    writeFileSync(join(home(id), "synthesis.md"), "findings\n");
-    return run(["register", id, "--reflected"], nowIso);
+  const record = (id) => JSON.parse(readFileSync(join(home(id), "thread.json"), "utf-8"));
+  const reflect = (id, nowIso, files = {}) => {
+    const dir = run(["reflect", id], nowIso).out.trim();
+    writeFileSync(join(dir, "synthesis.md"), "findings\n");
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    assert.equal(run(["register", id, "--reflected", dir], nowIso).code, 0);
+    return dir;
   };
-  return { store, run, home, reflect };
+  const closeRound = (round, nowIso) => {
+    const dir = join(store, "retro", "rounds", round);
+    for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(dir, f), "x\n");
+    return run(["close", round], nowIso);
+  };
+  return { store, run, home, record, reflect, closeRound, env };
+}
+
+function scratchDir(t) {
+  const dir = mkdtempSync(join(tmpdir(), "retro-scratch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
 }
 
 function gitRepo(t) {
@@ -54,69 +71,107 @@ test("a thread without a reflect is listed but not waiting", (t) => {
   assert.match(status, /Round due: no, no reflects waiting/);
 });
 
-test("--reflected refuses until synthesis.md is written", (t) => {
-  const { run, reflect } = sandbox(t);
-  const refused = run(["register", A, "--reflected"]);
-  assert.equal(refused.code, 1);
-  assert.match(refused.err, /synthesis\.md is missing/);
-  assert.equal(reflect(A).code, 0);
+test("--reflected refuses until synthesis.md is a file in a folder of the thread's home", (t) => {
+  const { run, home, reflect } = sandbox(t);
+  const dir = run(["reflect", A]).out.trim();
+  assert.ok(dir.startsWith(join(home(A), "reflect-")));
+  assert.match(run(["register", A, "--reflected", dir]).err, /synthesis\.md is missing/);
+  mkdirSync(join(dir, "synthesis.md"));
+  assert.match(run(["register", A, "--reflected", dir]).err, /synthesis\.md is missing/, "a directory is not an output");
+  assert.match(run(["register", A, "--reflected", tmpdir()]).err, /takes a folder inside/);
+  reflect(B);
   assert.match(run(["status"]).out, /## Waiting for a round\n\n\| thread/);
 });
 
-test("rejects an id that is not a thread uuid and an unknown option", (t) => {
-  const { run } = sandbox(t);
+test("rejects an id that is not a thread uuid, an unknown option, and an impossible date", (t) => {
+  const { run, reflect } = sandbox(t);
   assert.match(run(["register", "limhealth-restart"]).err, /needs a T3 thread id/);
   assert.match(run(["register", A, "--titel", "x"]).err, /unknown option --titel/);
+  reflect(A);
+  assert.match(run(["open", "--at", "2026-02-30"]).err, /takes a real date/);
 });
 
-test("trails in the temp dir are copied, trails in the store are linked", (t) => {
-  const { store, run, home } = sandbox(t);
-  const scratch = mkdtempSync(join(tmpdir(), "retro-scratch-"));
-  t.after(() => rmSync(scratch, { recursive: true, force: true }));
-  writeFileSync(join(scratch, "decisions.tsv"), "row 1\n");
+test("a second reflect keeps the first, and a retry keeps the completion time", (t) => {
+  const { run, record, reflect } = sandbox(t);
+  const first = reflect(A, "2026-10-01T09:00:00Z");
+  const second = reflect(A, "2026-10-02T09:00:00Z");
+  assert.notEqual(first, second);
+  assert.equal(readFileSync(join(first, "synthesis.md"), "utf-8"), "findings\n");
+  run(["register", A, "--reflected", first], "2026-10-08T09:00:00Z");
+  const reflects = record(A).reflects;
+  assert.equal(reflects.length, 2);
+  assert.match(reflects[0].completedAt, /^2026-10-0[01]/);
+  assert.match(run(["status"], "2026-10-08T10:00:00Z").out, /Round due: yes, 1 reflect waiting, oldest 7 days/);
+});
+
+test("copied trails keep every version; an unchanged source adds none", (t) => {
+  const { store, run, record } = sandbox(t);
+  const scratch = scratchDir(t);
+  const file = join(scratch, "review.md");
+  writeFileSync(file, "first flags\n");
   mkdirSync(join(store, "audit"), { recursive: true });
   writeFileSync(join(store, "audit", "run.tsv"), "row\n");
-  assert.equal(run(["register", A, "--trail", join(scratch, "decisions.tsv"), "--trail", join(store, "audit", "run.tsv")]).code, 0);
-  const rec = JSON.parse(readFileSync(join(home(A), "thread.json"), "utf-8"));
-  const copied = rec.trails.find((x) => x.mode === "copied");
-  assert.equal(copied.path, join(home(A), "trails", "decisions.tsv"));
-  assert.equal(readFileSync(copied.path, "utf-8"), "row 1\n");
-  assert.equal(rec.trails.find((x) => x.mode === "linked").path, join(store, "audit", "run.tsv"));
+  run(["register", A, "--trail", file, "--trail", join(store, "audit", "run.tsv")], "2026-10-01T09:00:00Z");
+  run(["register", A, "--trail", file], "2026-10-01T10:00:00Z");
+  assert.equal(record(A).trails.length, 2, "unchanged source makes no new version");
+  assert.equal(record(A).trails.find((x) => x.mode === "linked").path, join(store, "audit", "run.tsv"));
 
-  writeFileSync(join(scratch, "decisions.tsv"), "row 1\nrow 2\n");
-  run(["register", A, "--trail", join(scratch, "decisions.tsv")]);
-  const again = JSON.parse(readFileSync(join(home(A), "thread.json"), "utf-8"));
-  assert.equal(again.trails.length, 2, "re-registering a trail replaces its entry");
-  assert.equal(readFileSync(copied.path, "utf-8"), "row 1\nrow 2\n", "re-registering refreshes the copy");
+  writeFileSync(file, "replacement flags\n");
+  run(["register", A, "--trail", file], "2026-10-01T11:00:00Z");
+  const copies = record(A).trails.filter((x) => x.mode === "copied");
+  assert.equal(copies.length, 2);
+  assert.equal(readFileSync(copies[0].path, "utf-8"), "first flags\n");
+  assert.equal(readFileSync(copies[1].path, "utf-8"), "replacement flags\n");
+  assert.ok(run(["status"]).out.includes(copies[1].path), "status shows the newest version");
 
-  rmSync(join(scratch, "decisions.tsv"));
-  const gone = run(["register", A, "--trail", join(scratch, "decisions.tsv")]);
-  assert.equal(gone.code, 0, "a vanished source keeps its earlier copy");
+  rmSync(file);
+  const gone = run(["register", A, "--trail", file]);
+  assert.equal(gone.code, 0, "a vanished source keeps its last copy");
   assert.match(gone.err, /keeping the copy/);
   assert.match(run(["register", A, "--trail", join(scratch, "never.tsv")]).err, /trail not found/);
 });
 
+test("symlinked trails are materialized or linked by their real target", (t) => {
+  const { store, run, record } = sandbox(t);
+  const scratch = scratchDir(t);
+  writeFileSync(join(scratch, "evidence.md"), "e\n");
+  mkdirSync(join(scratch, "alias"));
+  symlinkSync(join(scratch, "evidence.md"), join(scratch, "alias", "evidence.md"));
+  mkdirSync(join(store, "audit"), { recursive: true });
+  symlinkSync(join(scratch, "evidence.md"), join(store, "audit", "points-out.md"));
+  writeFileSync(join(store, "audit", "real.tsv"), "row\n");
+  symlinkSync(join(store, "audit", "real.tsv"), join(scratch, "alias-to-store.tsv"));
+
+  run(["register", A, "--trail", join(scratch, "alias"), "--trail", join(store, "audit", "points-out.md"), "--trail", join(scratch, "alias-to-store.tsv")]);
+  const trails = record(A).trails;
+  rmSync(join(scratch, "evidence.md"));
+  rmSync(join(scratch, "alias-to-store.tsv"));
+  for (const x of trails.filter((x) => x.mode === "copied")) {
+    const files = lstatSync(x.path).isDirectory() ? readdirSync(x.path).map((n) => join(x.path, n)) : [x.path];
+    for (const f of files) assert.equal(readFileSync(f, "utf-8"), "e\n", `${f} survives its source`);
+  }
+  assert.equal(trails.filter((x) => x.mode === "copied").length, 2);
+  assert.equal(trails.find((x) => x.mode === "linked").path, join(store, "audit", "real.tsv"));
+});
+
 test("a committed clean trail is linked; modified or in a linked worktree it is copied", (t) => {
-  const { run, home } = sandbox(t);
+  const { run, record } = sandbox(t);
   const { repo, git } = gitRepo(t);
   const file = join(repo, "decisions.tsv");
   run(["register", A, "--trail", file]);
-  let trail = JSON.parse(readFileSync(join(home(A), "thread.json"), "utf-8")).trails[0];
-  assert.equal(trail.mode, "linked");
-  assert.equal(trail.commit, git("rev-parse", "HEAD").stdout.trim());
+  assert.equal(record(A).trails[0].mode, "linked");
+  assert.equal(record(A).trails[0].commit, git("rev-parse", "HEAD").stdout.trim());
 
   writeFileSync(file, "ts\tphase\nedited\n");
   run(["register", B, "--trail", file]);
-  trail = JSON.parse(readFileSync(join(home(B), "thread.json"), "utf-8")).trails[0];
-  assert.equal(trail.mode, "copied");
+  assert.equal(record(B).trails[0].mode, "copied");
 
   git("checkout", "-q", "--", "decisions.tsv");
   const wt = `${repo}-wt`;
   t.after(() => rmSync(wt, { recursive: true, force: true }));
   git("worktree", "add", "-q", wt);
   run(["register", C, "--trail", join(wt, "decisions.tsv")]);
-  trail = JSON.parse(readFileSync(join(home(C), "thread.json"), "utf-8")).trails[0];
-  assert.equal(trail.mode, "copied");
+  assert.equal(record(C).trails[0].mode, "copied");
 });
 
 test("three waiting reflects make a round due", (t) => {
@@ -136,9 +191,8 @@ test("one reflect waiting a week makes a round due", (t) => {
 });
 
 test("a round gathers waiting threads, refuses a second open, and closes only with its outputs", (t) => {
-  const { store, run, home, reflect } = sandbox(t);
-  reflect(A);
-  writeFileSync(join(home(A), "backlog.md"), "- a script for X\n");
+  const { store, run, reflect } = sandbox(t);
+  const dirA = reflect(A, undefined, { "backlog.md": "- a script for X\n" });
   reflect(B);
   run(["register", C]);
 
@@ -148,7 +202,8 @@ test("a round gathers waiting threads, refuses a second open, and closes only wi
   assert.equal(opened.out.trim(), dir);
   const round = JSON.parse(readFileSync(join(dir, "round.json"), "utf-8"));
   assert.deepEqual(round.threads.sort(), [A, B]);
-  assert.equal(readFileSync(join(dir, "inputs", A, "synthesis.md"), "utf-8"), "findings\n");
+  assert.ok(round.reflects.includes(dirA));
+  assert.equal(readFileSync(join(dir, "inputs", A, dirA.split("/").at(-1), "synthesis.md"), "utf-8"), "findings\n");
   assert.match(readFileSync(join(dir, "backlog.md"), "utf-8"), /a script for X/);
   assert.match(readFileSync(join(dir, "README.md"), "utf-8"), /merge-gate\.md/);
 
@@ -157,9 +212,9 @@ test("a round gathers waiting threads, refuses a second open, and closes only wi
 
   writeFileSync(join(dir, "synthesis.md"), "s\n");
   writeFileSync(join(dir, "decisions.md"), "d\n");
-  const early = run(["close", "2026-10-20"]);
-  assert.equal(early.code, 1);
-  assert.match(early.err, /missing merge-gate\.md/);
+  mkdirSync(join(dir, "merge-gate.md"));
+  assert.match(run(["close", "2026-10-20"]).err, /missing merge-gate\.md/, "a directory is not an output");
+  rmSync(join(dir, "merge-gate.md"), { recursive: true });
   writeFileSync(join(dir, "merge-gate.md"), "m\n");
   assert.equal(run(["close", "2026-10-20"]).code, 0);
 
@@ -170,16 +225,15 @@ test("a round gathers waiting threads, refuses a second open, and closes only wi
   assert.match(run(["open", "--threads", A]).err, /was retro'd in round 2026-10-20/);
 });
 
-test("a thread that reflects again after its round is waiting again", (t) => {
-  const { store, run, reflect } = sandbox(t);
-  reflect(A, "2026-10-01T09:00:00Z");
-  run(["open"], "2026-10-02T09:00:00Z");
-  const dir = join(store, "retro", "rounds", "2026-10-02");
-  for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(dir, f), "x\n");
-  run(["close", "2026-10-02"], "2026-10-02T10:00:00Z");
-  assert.match(run(["status"], "2026-10-03T09:00:00Z").out, /no reflects waiting/);
-  reflect(A, "2026-10-04T09:00:00Z");
-  assert.match(run(["status"], "2026-10-04T10:00:00Z").out, /1 reflect waiting/);
+test("a round takes exactly the reflects it copied, whatever its date", (t) => {
+  const { run, reflect, closeRound } = sandbox(t);
+  reflect(A, "2026-10-17T18:00:00Z");
+  run(["open", "--at", "2026-10-16"]);
+  closeRound("2026-10-16");
+  assert.match(run(["status"]).out, /no reflects waiting/);
+  assert.match(run(["open", "--threads", A]).err, /was retro'd/);
+  reflect(A, "2026-10-18T09:00:00Z");
+  assert.match(run(["status"], "2026-10-18T10:00:00Z").out, /1 reflect waiting/);
 });
 
 test("an earlier retro needs no threads and closes on its synthesis alone", (t) => {
@@ -245,13 +299,39 @@ test("an open that did not finish is reported and does not block the next", (t) 
   assert.equal(run(["open", "--at", "2026-10-20"]).out.trim(), join(store, "retro", "rounds", "2026-10-20-2"));
 });
 
-test("backlog gathers each waiting thread's backlog under its heading", (t) => {
-  const { run, home, reflect } = sandbox(t);
-  reflect(A);
+test("a live holder's lock makes a command refuse; a dead holder's lock is cleared", async (t) => {
+  const { store, run } = sandbox(t);
+  const lock = join(store, "retro", ".lock");
+  mkdirSync(lock, { recursive: true });
+  const holder = spawn("sleep", ["30"]);
+  t.after(() => holder.kill());
+  writeFileSync(join(lock, "pid"), String(holder.pid));
+  const blocked = run(["register", A], undefined, { RETRO_LOCK_WAIT_MS: "300" });
+  assert.equal(blocked.code, 1);
+  assert.match(blocked.err, /another retro command holds/);
+
+  holder.kill();
+  await new Promise((r) => holder.on("exit", r));
+  assert.equal(run(["register", A], undefined, { RETRO_LOCK_WAIT_MS: "300" }).code, 0);
+  assert.ok(!existsSync(lock), "the lock is released after the command");
+});
+
+test("parallel registrations of one thread keep every trail", async (t) => {
+  const { store, run, record, env } = sandbox(t);
+  run(["register", A]);
+  mkdirSync(join(store, "audit"), { recursive: true });
+  const files = Array.from({ length: 6 }, (_, i) => join(store, "audit", `t${i}.tsv`));
+  files.forEach((f) => writeFileSync(f, "row\n"));
+  await Promise.all(files.map((f) => new Promise((done) => spawn(process.execPath, [script, "register", A, "--trail", f], { env: env() }).on("exit", done))));
+  assert.equal(record(A).trails.length, 6);
+});
+
+test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
+  const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);
-  writeFileSync(join(home(A), "backlog.md"), "- item one\n");
+  reflect(A, undefined, { "backlog.md": "- item one\n" });
   reflect(B);
   const out = run(["backlog"]).out;
   assert.match(out, /## \[first\]\(t3-thread:\/\/v1\/aaaaaaaa[^\n]*\n\n- item one/);
-  assert.ok(!existsSync(join(home(B), "backlog.md")));
+  assert.doesNotMatch(out, /bbbbbbbb/);
 });
