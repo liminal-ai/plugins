@@ -560,9 +560,9 @@ test("a failed push never fails the command, and the next write pushes what wait
   assert.equal(JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8")).failure, null);
 });
 
-test("a possible secret blocks the commit and push and heads REGISTRY.md until it is removed", (t) => {
+test("a possible secret blocks the push and heads REGISTRY.md until it is removed", (t) => {
   const { store, run, home } = sandbox(t);
-  const { git, pushed } = backedUp(t, store);
+  const { remote, git, pushed } = backedUp(t, store);
   run(["register", A]);
   writeFileSync(join(home(A), "notes.md"), `context\n${FAKE_KEY}`);
   const blocked = run(["register", A]);
@@ -576,6 +576,7 @@ test("a possible secret blocks the commit and push and heads REGISTRY.md until i
   run(["register", A]);
   assert.equal(pushed().length, 2);
   assert.doesNotMatch(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /possible secrets/);
+  assert.doesNotMatch(spawnSync("git", ["--git-dir", remote, "log", "-p", "--text", "main"], { encoding: "utf-8" }).stdout, /BEGIN OPENSSH/, "the held-back commit never reaches the remote");
 });
 
 test("a trail inside the retro folder is linked, since the backup already holds it", (t) => {
@@ -646,4 +647,11 @@ test("a file written during the scan or before the push is never pushed unscanne
   assert.equal(pushed().length, 2);
   assert.ok(!leaked());
   assert.equal(git("status", "--porcelain").stdout.split("\n").filter((l) => l && !l.endsWith("REGISTRY.md")).join("\n"), "", "the next write committed them locally");
+
+  rmSync(join(home(A), "reviewer-output.md"));
+  rmSync(join(home(A), "capture.log"));
+  assert.equal(run(["register", A, "--title", "second"]).err, "");
+  assert.equal(pushed().length, 3);
+  assert.ok(!leaked(), "the held-back commit is folded away, not pushed");
+  assert.equal(git("rev-parse", "HEAD").stdout, spawnSync("git", ["--git-dir", remote, "rev-parse", "main"], { encoding: "utf-8" }).stdout);
 });

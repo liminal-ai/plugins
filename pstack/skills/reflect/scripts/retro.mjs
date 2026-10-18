@@ -47,6 +47,7 @@ const GIT_DIR = join(RETRO, ".git");
 const BACKUP_STATE = join(GIT_DIR, "retro-backup.json");
 const GITLEAKS_REPORT = join(GIT_DIR, "retro-gitleaks.json");
 const PUSH_TIMEOUT_MS = 15000;
+const BACKUP_BRANCH = "main";
 // The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
 const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
 
@@ -357,14 +358,13 @@ function findProblems({ threads, rounds, problems }) {
   return out;
 }
 
-function renderRegistry(state, at) {
+function renderRegistry(state, at, secrets) {
   const { threads, rounds } = state;
   const all = [...threads.values()].sort((a, b) => a.firstRegistered.localeCompare(b.firstRegistered));
   const by = (kind) => all.filter((t) => statusOf(t, rounds).kind === kind);
   const due = dueReason(state, at);
   const table = (rows, head) => (rows.length ? [head, head.replace(/[^|]+/g, "---"), ...rows] : ["None."]);
   const decided = (t) => (pendingReflects(t, rounds).some((c) => isFile(join(c.dir, "decisions.md"))) ? "yes" : "no");
-  const { secrets } = backupState();
   const lines = [
     "# Retro registry",
     "",
@@ -374,7 +374,7 @@ function renderRegistry(state, at) {
           "",
           ...secrets.map((x) => `- \`${x.file}\`: ${x.pattern}`),
           "",
-          "Nothing is committed or pushed until each one is removed. The next retro command that writes checks again.",
+          "Nothing is pushed until each one is removed. The next retro command that writes checks again.",
           "",
         ]
       : []),
@@ -411,8 +411,8 @@ function renderRegistry(state, at) {
   return `${lines.join("\n")}\n`;
 }
 
-function refreshRegistry() {
-  const text = renderRegistry(load(), now());
+function refreshRegistry(secrets = backupState().secrets) {
+  const text = renderRegistry(load(), now(), secrets);
   writeAtomic(join(RETRO, "REGISTRY.md"), text);
   return text;
 }
@@ -430,10 +430,10 @@ function backupState() {
 }
 
 // Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
-function gitleaksHits() {
+function gitleaksHits(range) {
   const leaks = spawnSync(
     "gitleaks",
-    ["git", "--pre-commit", "--staged", "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
+    ["git", "--log-opts", range.join(" "), "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
     { encoding: "utf-8" },
   );
   if (leaks.error?.code === "ENOENT" || leaks.status === 0) return [];
@@ -443,12 +443,15 @@ function gitleaksHits() {
   return [{ file: ".", pattern: `gitleaks did not finish: ${(leaks.stderr || leaks.error?.message || `exit ${leaks.status}`).trim().split("\n").at(-1)}` }];
 }
 
-// --text makes git show the added lines of files it would call binary, such as a log with a NUL byte.
-function scanStaged() {
-  const hits = new Map(gitleaksHits().map((x) => [`${x.file}\0${x.pattern}`, x]));
+// Reads the added lines of every commit in range, the content a push of that range sends.
+// --text shows files git would call binary, such as a log with a NUL byte; --no-renames shows a moved file in full.
+function scanCommits(range) {
+  const hits = new Map(gitleaksHits(range).map((x) => [`${x.file}\0${x.pattern}`, x]));
   let file = null;
   let header = false;
-  for (const line of git("-c", "core.quotePath=false", "diff", "--cached", "--text", "--no-color", "--no-ext-diff", "-U0").stdout.split("\n")) {
+  const log = git("-c", "core.quotePath=false", "log", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "--format=", ...range);
+  if (log.status !== 0) return [{ file: ".", pattern: `git log did not finish: ${log.stderr.trim().split("\n").at(-1)}` }];
+  for (const line of log.stdout.split("\n")) {
     if (line.startsWith("diff --git ")) header = true;
     else if (header && line.startsWith("+++ ")) file = line === "+++ /dev/null" ? null : line.slice(6);
     else if (line.startsWith("@@")) header = false;
@@ -468,28 +471,40 @@ function backupFailed(state, step, r) {
 }
 
 // Every write ends here. A backup failure never fails the command: the work stays on disk and the next write retries.
+// It commits first, scans the commits the push would send, then pushes that commit by SHA,
+// so a file written meanwhile waits for the next write's commit and scan.
 function save(message) {
   if (!existsSync(GIT_DIR)) {
     refreshRegistry();
     return console.error(`warning: ${RETRO} is not a git repo, so nothing is backed up`);
   }
+  const prior = backupState();
+  refreshRegistry([]);
   stageAll();
-  const state = { ...backupState(), secrets: scanStaged() };
+  // A commit held back for a secret would ride along in every later push, so fold the unpushed commits into this one.
+  const pushedHead = git("rev-parse", "--verify", "-q", `refs/remotes/origin/${BACKUP_BRANCH}`).stdout.trim();
+  let body = [];
+  if (prior.secrets.length && pushedHead) {
+    body = git("log", "--format=%s", "HEAD", "--not", "--remotes=origin").stdout.trim().split("\n").filter(Boolean);
+    git("reset", "-q", "--soft", pushedHead);
+  }
+  if (git("diff", "--cached", "--quiet").status !== 0) {
+    const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`, ...(body.length ? ["-m", `Also holds: ${body.join("; ")}`] : []));
+    if (commit.status !== 0) return backupFailed(prior, "commit", commit);
+  }
+  const head = git("rev-parse", "--verify", "-q", "HEAD").stdout.trim();
+  if (!head) return;
+  const range = [head, "--not", "--remotes=origin"];
+  const unpushed = git("rev-list", "--count", ...range);
+  const state = { ...prior, secrets: unpushed.status === 0 && unpushed.stdout.trim() === "0" ? [] : scanCommits(range) };
   writeJson(BACKUP_STATE, state);
-  refreshRegistry();
   if (state.secrets.length) {
-    git("reset", "-q");
-    for (const x of state.secrets) console.error(`retro: possible secret in ${join(RETRO, x.file)} (${x.pattern}); nothing is committed or pushed until it is removed`);
+    refreshRegistry();
+    for (const x of state.secrets) console.error(`retro: possible secret in ${join(RETRO, x.file)} (${x.pattern}); nothing is pushed until it is removed`);
     return;
   }
-  stageAll();
-  if (git("diff", "--cached", "--quiet").status !== 0) {
-    const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`);
-    if (commit.status !== 0) return backupFailed(state, "commit", commit);
-  }
-  const unpushed = git("rev-list", "--count", "HEAD", "--not", "--remotes=origin");
   if (unpushed.status !== 0 || unpushed.stdout.trim() !== "0") {
-    const push = spawnSync("git", ["-C", RETRO, "push", "-q", "origin", "HEAD:main"], { encoding: "utf-8", timeout: PUSH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    const push = spawnSync("git", ["-C", RETRO, "push", "-q", "origin", `${head}:refs/heads/${BACKUP_BRANCH}`], { encoding: "utf-8", timeout: PUSH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
     if (push.status !== 0) return backupFailed(state, "push", push);
   }
   if (state.failure) writeJson(BACKUP_STATE, { ...state, failure: null });
