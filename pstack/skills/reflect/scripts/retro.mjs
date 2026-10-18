@@ -47,6 +47,8 @@ const GIT_DIR = join(RETRO, ".git");
 const BACKUP_STATE = join(GIT_DIR, "retro-backup.json");
 const GITLEAKS_REPORT = join(GIT_DIR, "retro-gitleaks.json");
 const PUSH_TIMEOUT_MS = 15000;
+// The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
+const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
 
 // Checked on every commit, with gitleaks too when it is installed. Each pattern is specific enough not to match ordinary prose.
 const SECRET_PATTERNS = [
@@ -457,6 +459,8 @@ function scanStaged() {
   return [...hits.values()];
 }
 
+const stageAll = () => git("add", "-A", "--force", "--", ".", ...NEVER_BACKED_UP.map((p) => `:(exclude,glob)**/${p}`));
+
 function backupFailed(state, step, r) {
   const error = (r.stderr || r.error?.message || `exit ${r.status}`).trim().split("\n").at(-1);
   writeJson(BACKUP_STATE, { ...state, failure: { at: stamp(now()), step, error } });
@@ -469,7 +473,7 @@ function save(message) {
     refreshRegistry();
     return console.error(`warning: ${RETRO} is not a git repo, so nothing is backed up`);
   }
-  git("add", "-A");
+  stageAll();
   const state = { ...backupState(), secrets: scanStaged() };
   writeJson(BACKUP_STATE, state);
   refreshRegistry();
@@ -478,7 +482,7 @@ function save(message) {
     for (const x of state.secrets) console.error(`retro: possible secret in ${join(RETRO, x.file)} (${x.pattern}); nothing is committed or pushed until it is removed`);
     return;
   }
-  git("add", "-A");
+  stageAll();
   if (git("diff", "--cached", "--quiet").status !== 0) {
     const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`);
     if (commit.status !== 0) return backupFailed(state, "commit", commit);

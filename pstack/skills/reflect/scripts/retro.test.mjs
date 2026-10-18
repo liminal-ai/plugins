@@ -608,3 +608,16 @@ test("a copied trail that is a git repo reaches the backup as files, not a gitli
   assert.ok(pushedFiles().includes(`${relative}/decisions.tsv`), "the trail's files are in the backup");
   assert.ok(!existsSync(join(trail.path, ".git")));
 });
+
+test("a copied trail's own ignore rules do not keep its files out of the backup", (t) => {
+  const { store, run, record } = sandbox(t);
+  const { pushedFiles } = backedUp(t, store);
+  const trail = scratchDir(t);
+  writeFileSync(join(trail, ".gitignore"), "*.tsv\n");
+  writeFileSync(join(trail, "decisions.tsv"), "ts\tphase\n");
+  writeFileSync(join(trail, "run.tmp-1"), "scratch\n");
+  run(["register", A, "--trail", trail]);
+  const relative = record(A).trails[0].path.slice(join(store, "retro").length + 1);
+  assert.ok(pushedFiles().includes(`${relative}/decisions.tsv`));
+  assert.ok(!pushedFiles().includes(`${relative}/run.tmp-1`), "the retro folder's own rules still apply");
+});
