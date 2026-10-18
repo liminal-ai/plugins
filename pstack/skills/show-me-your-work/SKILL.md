@@ -42,9 +42,11 @@ A run is one agent conversation, including its later turns and any summary of it
 
 ## Where it lives
 
-By default the log is a working artifact, not committed. Keep it at `decisions.tsv` in the work dir, or `.audit/<task-slug>.tsv` when several efforts run at once, and leave it out of git.
+By default the log is a working artifact, not committed. Keep it at `decisions.tsv` in the work dir, or `.audit/<task-slug>.tsv` when several efforts run at once, and leave it out of git. When the work dir is a worktree or temp dir that will be removed, keep the log in the pstack store instead, at `audit/<date>-<task-slug>.tsv`.
 
 Commit it only when the work is ambitious enough that a reviewer needs the trail to trust the result.
+
+At hand-back, after the cross-model review, register the log and its review file with this thread: `node ~/.agents/skills/reflect/scripts/retro.mjs register <thread-id> --trail <log> --trail <review file>`. The script copies a trail that could vanish into the thread's home in the store and links one that is safe, so a later retro can find it.
 
 ## Rules
 
@@ -70,7 +72,7 @@ Before handing back, spawn a `delegate_task` child on a different model family f
 - Choices that look risky in hindsight (premature, scope-creeping, papering over a symptom).
 - Gaps the user would otherwise miss on a casual skim.
 
-Every reply for a run that produced a trail ends with an "Attention" section. Lead with the reviewer's model on its own line (`reviewed by <model>`), then list each flag pointing to specific rows or moments. "No flags" is a valid value. The model name is not.
+Save the reviewer's full flags beside the log, as `<log name>.review.md`. Every reply for a run that produced a trail ends with an "Attention" section. Lead with the reviewer's model on its own line (`reviewed by <model>`), then only the flags that need the user's judgment or action, each pointing to specific rows or moments, and the review file's path. "No flags" is a valid value. The model name is not.
 
 ## Reviewing the trail
 
