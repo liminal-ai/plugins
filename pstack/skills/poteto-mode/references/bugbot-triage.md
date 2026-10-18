@@ -16,7 +16,7 @@ When in doubt, ask. Skipping a noisy code-quality comment is cheap; skipping a r
 
 Codex's review bot reviews PRs alongside Bugbot, as a trial of which finds real bugs. Confirm its account name on the first PR it reviews. Triage its threads with the same rubric. Count its passes separately from Bugbot's: `watch-pr` marks only Bugbot threads (`isBugBot`), so count Codex passes from the thread author and the PR's review history, and never add them to Bugbot's pass count. Hold the third-pass dismiss lean for Codex. Note which bot raised each real bug, so the two can be compared after a few PRs.
 
-A push does not always start a Codex review. Its triggers live in the repo's Codex settings, which `gh` cannot read, and on pstack-lim it has both reviewed a push on its own and needed a request. Codex is pending until its summary comment's `codex-review-state` names the current head with `"status":"completed"`. After a push, if that comment does not show a review of the new head under way, comment `@codex review` on the PR.
+A push does not always start a Codex review. Its triggers live in the repo's Codex settings, which `gh` cannot read, and on pstack-lim it has both reviewed a push on its own and needed a request. Codex is pending until its summary comment's `codex-review-state` names the current head with `"status":"completed"`. After a push, if that comment does not show any review of the new head (neither in progress nor completed), comment `@codex review` on the PR.
 
 ## Learned pattern format
 
