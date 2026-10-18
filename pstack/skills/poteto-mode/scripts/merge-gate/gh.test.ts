@@ -284,6 +284,22 @@ for (const [label, name, value] of [
     ],
   ],
   [
+    "a comment with a whitespace login",
+    "comments.json",
+    [
+      [
+        {
+          id: 9,
+          user: { login: "   ", type: "User" },
+          body: "hello",
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
+  ],
+  [
     "a comment with a zero id",
     "comments.json",
     [
