@@ -11,6 +11,7 @@ import {
   type Frontier,
   type InboxPointer,
   type OpenGate,
+  type StandingChange,
   type StandingLine,
   type StatusReport,
   type Store,
@@ -80,6 +81,10 @@ interface GateParkOptions {
 
 interface GateResolveOptions {
   readonly answer: string;
+}
+
+interface StandingRemoveOptions {
+  readonly reason: string;
 }
 
 interface FrontierSetOptions {
@@ -176,6 +181,18 @@ function frontierLine(value: Frontier): string {
           )
           .join(",");
   return `generation=${value.generation} prs=${prs} lowest-unmerged=${value.lowestUnmerged ?? "none"}`;
+}
+
+function standingLine(item: StandingLine): string {
+  return `${item.number}. ${item.line}`;
+}
+
+function standingLines(rows: readonly StandingLine[]): string {
+  return compactRows(rows, standingLine, "(no standing orders)");
+}
+
+function standingChangeLines(change: StandingChange): string {
+  return `was ${standingLine(change.old)}\n${standingLines(change.orders)}`;
 }
 
 function statusLines(report: StatusReport): string {
@@ -535,22 +552,35 @@ function createProgram(io: Io): Command {
       program,
       io,
       (store) => store.standing.show(),
-      (rows) =>
-        compactRows(
-          rows,
-          (item: StandingLine) => `${item.number}. ${item.line}`,
-          "(no standing orders)"
-        )
+      standingLines
     )
   );
   leaf(standing, "add <line>", "add a standing order").action((line: string) =>
-    runStore(
-      program,
-      io,
-      (store) => store.standing.add({ line }),
-      (item) => `${item.number}. ${item.line}`
-    )
+    runStore(program, io, (store) => store.standing.add({ line }), standingLine)
   );
+  leaf(standing, "edit", "replace a standing order's text")
+    .argument("<n>", "standing order number", positiveInteger)
+    .argument("<line>", "new standing order text")
+    .action((number: number, line: string) =>
+      runStore(
+        program,
+        io,
+        (store) => store.standing.edit({ number, line }),
+        standingChangeLines
+      )
+    );
+  leaf(standing, "remove", "remove a standing order and renumber the rest")
+    .argument("<n>", "standing order number", positiveInteger)
+    .requiredOption("--reason <text>", "why the order is removed")
+    .action((number: number, options: StandingRemoveOptions) =>
+      runStore(
+        program,
+        io,
+        (store) =>
+          store.standing.remove({ number, reason: options.reason }),
+        standingChangeLines
+      )
+    );
 
   program.action(() => requireSubcommand(program));
   return program;
