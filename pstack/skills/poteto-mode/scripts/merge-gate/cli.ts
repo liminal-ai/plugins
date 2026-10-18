@@ -44,7 +44,7 @@ interface RunRecord {
   readonly pr: string;
   readonly head: string;
   readonly mode: "check" | "merge";
-  readonly outcome: "merged" | "refused" | "error";
+  readonly outcome: "merged" | "would-merge" | "refused" | "error";
   readonly missing: readonly string[];
 }
 
@@ -159,7 +159,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     return {
       exit: EXIT.merged,
       text: renderEvaluations(`WOULD MERGE: ${at}`, evaluations),
-      run: { ...run, outcome: "merged", missing: [] },
+      run: { ...run, outcome: "would-merge", missing: [] },
     };
 
   const notMerged = (why: string): Decision => ({

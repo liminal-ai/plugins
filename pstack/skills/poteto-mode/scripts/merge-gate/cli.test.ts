@@ -445,6 +445,12 @@ describe("merge-gate", () => {
     ]);
   });
 
+  it("logs a passing --check as would-merge, not merged", async () => {
+    const result = await gate();
+    expect(result.exit).toBe(0);
+    expect(result.log()).toContain("\tcheck\twould-merge\t");
+  });
+
   it("defaults --repo to the origin remote's repo", async () => {
     const github = fakeGitHub({
       comments: approvals(),
