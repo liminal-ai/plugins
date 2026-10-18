@@ -16,6 +16,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\ttask\tthread";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
+const STANDING_HISTORY_HEADER = "ts\taction\tnumber\told\tnew\treason";
 const LOCK_FILE = ".orch.lock";
 
 export type Verdict =
@@ -96,6 +97,11 @@ export interface Frontier {
 export interface StandingLine {
   readonly number: number;
   readonly line: string;
+}
+
+export interface StandingChange {
+  readonly old: StandingLine;
+  readonly orders: readonly StandingLine[];
 }
 
 export type Counts = Readonly<Record<string, number>>;
@@ -179,6 +185,16 @@ export interface AddStandingParams {
   readonly line: string;
 }
 
+export interface EditStandingParams {
+  readonly number: number;
+  readonly line: string;
+}
+
+export interface RemoveStandingParams {
+  readonly number: number;
+  readonly reason: string;
+}
+
 export interface OpenStoreOptions {
   readonly force?: boolean;
   readonly onLockStolen?: (holder: string) => void;
@@ -216,6 +232,8 @@ export interface Store {
   readonly standing: {
     readonly show: () => Promise<readonly StandingLine[]>;
     readonly add: (params: AddStandingParams) => Promise<StandingLine>;
+    readonly edit: (params: EditStandingParams) => Promise<StandingChange>;
+    readonly remove: (params: RemoveStandingParams) => Promise<StandingChange>;
   };
   readonly status: {
     readonly render: () => Promise<StatusReport>;
@@ -756,6 +774,57 @@ async function readStanding(
     result.push({ number, line: match[2] ?? "" });
   }
   return result;
+}
+
+async function saveStanding(
+  store: string,
+  lines: readonly string[]
+): Promise<readonly StandingLine[]> {
+  const rows = lines.map((line, index) => ({ number: index + 1, line }));
+  await atomicWrite(
+    join(store, "preferences.md"),
+    rows.map((row) => `${row.number}. ${row.line}\n`).join("")
+  );
+  return rows;
+}
+
+function standingAt(
+  rows: readonly StandingLine[],
+  number: number
+): StandingLine {
+  const row = rows[positiveInteger(number, "standing order number") - 1];
+  if (row === undefined) {
+    throw new UserError(
+      `standing order ${number} does not exist; there are ${rows.length}`
+    );
+  }
+  return row;
+}
+
+async function appendStandingHistory(
+  store: string,
+  change: {
+    readonly action: "edit" | "remove";
+    readonly old: StandingLine;
+    readonly line: string;
+    readonly reason: string;
+  }
+): Promise<void> {
+  const path = join(store, "standing-history.tsv");
+  const rows = (await exists(path))
+    ? await readTsv(path, STANDING_HISTORY_HEADER, 6)
+    : [];
+  await writeTsv(path, STANDING_HISTORY_HEADER, [
+    ...rows,
+    [
+      new Date().toISOString(),
+      change.action,
+      String(change.old.number),
+      change.old.line,
+      change.line,
+      change.reason,
+    ],
+  ]);
 }
 
 function countValues(values: readonly string[]): Counts {
@@ -1679,17 +1748,44 @@ export function openStore(
       },
       add: async (params) => {
         await beginWrite();
-        const rows = [...(await readStanding(store))];
-        const item: StandingLine = {
-          number: rows.length + 1,
-          line: requiredLine(params.line, "standing order"),
-        };
-        rows.push(item);
-        await atomicWrite(
-          join(store, "preferences.md"),
-          `${rows.map((row) => `${row.number}. ${row.line}`).join("\n")}\n`
+        const line = requiredLine(params.line, "standing order");
+        const rows = await readStanding(store);
+        await saveStanding(store, [...rows.map((row) => row.line), line]);
+        return { number: rows.length + 1, line };
+      },
+      edit: async (params) => {
+        await beginWrite();
+        const line = requiredLine(params.line, "standing order");
+        const rows = await readStanding(store);
+        const old = standingAt(rows, params.number);
+        const orders = await saveStanding(
+          store,
+          rows.map((row) => (row.number === old.number ? line : row.line))
         );
-        return item;
+        await appendStandingHistory(store, {
+          action: "edit",
+          old,
+          line,
+          reason: "",
+        });
+        return { old, orders };
+      },
+      remove: async (params) => {
+        await beginWrite();
+        const reason = requiredLine(params.reason, "reason");
+        const rows = await readStanding(store);
+        const old = standingAt(rows, params.number);
+        const orders = await saveStanding(
+          store,
+          rows.filter((row) => row.number !== old.number).map((row) => row.line)
+        );
+        await appendStandingHistory(store, {
+          action: "remove",
+          old,
+          line: "",
+          reason,
+        });
+        return { old, orders };
       },
     },
     status: {
@@ -1739,6 +1835,10 @@ export function openStore(
       await mkdir(join(store, "inbox"), { recursive: true });
       await writeIfMissing(join(store, "gates.md"), "");
       await writeIfMissing(join(store, "preferences.md"), "");
+      await writeIfMissing(
+        join(store, "standing-history.tsv"),
+        `${STANDING_HISTORY_HEADER}\n`
+      );
       await writeIfMissing(join(store, "frontier.json"), "{}\n");
       return { store };
     },

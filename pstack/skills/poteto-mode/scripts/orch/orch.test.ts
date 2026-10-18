@@ -292,6 +292,7 @@ describe("Store", () => {
       "inbox",
       "ledger.tsv",
       "preferences.md",
+      "standing-history.tsv",
       "units.tsv",
     ]);
 
@@ -825,6 +826,167 @@ console.log(JSON.stringify(matching.slice(0, limit)));
 });
 
 describe("orch CLI", () => {
+  async function standingStore(lines: readonly string[]): Promise<string> {
+    const directory = await makeDirectory();
+    expect(runCli(["--store", directory, "init"]).code).toBe(0);
+    for (const line of lines) {
+      expect(runCli(["--store", directory, "standing", "add", line]).code).toBe(
+        0
+      );
+    }
+    return directory;
+  }
+
+  async function storeFile(directory: string, name: string): Promise<string> {
+    return readFile(join(directory, name), "utf8");
+  }
+
+  function historyRows(raw: string): readonly (readonly string[])[] {
+    const [header, ...rows] = raw.replace(/\n$/, "").split("\n");
+    expect(header).toBe("ts\taction\tnumber\told\tnew\treason");
+    return rows.map((row) => {
+      const cells = row.split("\t");
+      expect(cells[0]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      return cells.slice(1);
+    });
+  }
+
+  it("edits a standing order in place and records the old text", async () => {
+    const directory = await standingStore(["Alpha.", "Beta.", "Gamma."]);
+    expect(await storeFile(directory, "standing-history.tsv")).toBe(
+      "ts\taction\tnumber\told\tnew\treason\n"
+    );
+
+    const edited = runCli([
+      "--store",
+      directory,
+      "standing",
+      "edit",
+      "2",
+      "Beta, revised.",
+    ]);
+    expect(edited.code).toBe(0);
+    expect(edited.stdout).toBe(
+      "was 2. Beta.\n1. Alpha.\n2. Beta, revised.\n3. Gamma.\n"
+    );
+    expect(await storeFile(directory, "preferences.md")).toBe(
+      "1. Alpha.\n2. Beta, revised.\n3. Gamma.\n"
+    );
+    expect(
+      historyRows(await storeFile(directory, "standing-history.tsv"))
+    ).toEqual([["edit", "2", "Beta.", "Beta, revised.", ""]]);
+  });
+
+  it("removes a middle standing order, renumbers the rest, and emits JSON", async () => {
+    const directory = await standingStore(["Alpha.", "Beta.", "Gamma."]);
+    const removed = runCli([
+      "--store",
+      directory,
+      "--json",
+      "standing",
+      "remove",
+      "2",
+      "--reason",
+      "superseded by Gamma",
+    ]);
+    expect(removed.code).toBe(0);
+    expect(JSON.parse(removed.stdout)).toEqual({
+      old: { number: 2, line: "Beta." },
+      orders: [
+        { number: 1, line: "Alpha." },
+        { number: 2, line: "Gamma." },
+      ],
+    });
+    expect(await storeFile(directory, "preferences.md")).toBe(
+      "1. Alpha.\n2. Gamma.\n"
+    );
+    expect(runCli(["--store", directory, "standing", "show"]).stdout).toBe(
+      "1. Alpha.\n2. Gamma.\n"
+    );
+    expect(
+      historyRows(await storeFile(directory, "standing-history.tsv"))
+    ).toEqual([["remove", "2", "Beta.", "", "superseded by Gamma"]]);
+  });
+
+  it("removes the last standing order down to an empty file", async () => {
+    const directory = await standingStore(["Alpha.", "Beta."]);
+    const last = runCli([
+      "--store",
+      directory,
+      "standing",
+      "remove",
+      "2",
+      "--reason",
+      "done",
+    ]);
+    expect(last.code).toBe(0);
+    expect(last.stdout).toBe("was 2. Beta.\n1. Alpha.\n");
+
+    const only = runCli([
+      "--store",
+      directory,
+      "standing",
+      "remove",
+      "1",
+      "--reason",
+      "done",
+    ]);
+    expect(only.code).toBe(0);
+    expect(only.stdout).toBe("was 1. Alpha.\n(no standing orders)\n");
+    expect(await storeFile(directory, "preferences.md")).toBe("");
+    expect(
+      historyRows(await storeFile(directory, "standing-history.tsv"))
+    ).toEqual([
+      ["remove", "2", "Beta.", "", "done"],
+      ["remove", "1", "Alpha.", "", "done"],
+    ]);
+  });
+
+  it("rejects an out-of-range number, empty text, and a missing reason without writing", async () => {
+    const directory = await standingStore(["Alpha.", "Beta."]);
+    const cases: readonly (readonly [readonly string[], string])[] = [
+      [["edit", "3", "Gamma."], "standing order 3 does not exist; there are 2"],
+      [
+        ["remove", "5", "--reason", "gone"],
+        "standing order 5 does not exist; there are 2",
+      ],
+      [["edit", "0", "Gamma."], "must be a positive integer"],
+      [["edit", "1", "  "], "standing order must not be empty"],
+      [["remove", "1"], "required option '--reason <text>' not specified"],
+      [["remove", "1", "--reason", " "], "reason must not be empty"],
+    ];
+    for (const [args, error] of cases) {
+      const result = runCli(["--store", directory, "standing", ...args]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(error);
+    }
+    expect(await storeFile(directory, "preferences.md")).toBe(
+      "1. Alpha.\n2. Beta.\n"
+    );
+    expect(await storeFile(directory, "standing-history.tsv")).toBe(
+      "ts\taction\tnumber\told\tnew\treason\n"
+    );
+  });
+
+  it("creates the history file on first write in a store made before it existed", async () => {
+    const directory = await standingStore(["Alpha.", "Beta."]);
+    await rm(join(directory, "standing-history.tsv"));
+
+    const edited = runCli([
+      "--store",
+      directory,
+      "standing",
+      "edit",
+      "1",
+      "Alpha, revised.",
+    ]);
+    expect(edited.code).toBe(0);
+    expect(
+      historyRows(await storeFile(directory, "standing-history.tsv"))
+    ).toEqual([["edit", "1", "Alpha.", "Alpha, revised.", ""]]);
+  });
+
   it("prints commander help and rejects invalid parsing with exit 1", async () => {
     const help = runCli(["--help"]);
     expect(help.code).toBe(0);
