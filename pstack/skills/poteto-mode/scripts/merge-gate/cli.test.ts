@@ -466,6 +466,7 @@ describe("merge-gate", () => {
           `${repos.git(repos.remote, "diff-tree", "-r", "--no-renames", "--full-index", "--abbrev=40", repos.main, head, "--", "AGENTS.md", "sub/Claude.md")}\n`
         )
         .digest("hex");
+    const approvedIn = "approved-in: 55835e2a-d498-4643-95ce-a3a0eb4f736b";
     const withHead = (
       head: string,
       ...extra: ReturnType<typeof comment>[]
@@ -490,7 +491,7 @@ describe("merge-gate", () => {
         withHead(
           repos.instructionHead,
           comment(
-            `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\napproved-in: 55835e2a-d498-4643-95ce-a3a0eb4f736b\n> yes, ship that exact text`
+            `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}\n> yes, ship that exact text`
           )
         )
       );
@@ -518,7 +519,7 @@ describe("merge-gate", () => {
           comment(
             `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`
           ),
-          comment("approved-in: 55835e2a-d498-4643-95ce-a3a0eb4f736b")
+          comment(approvedIn)
         )
       );
       expect(result.exit).toBe(1);
@@ -526,7 +527,7 @@ describe("merge-gate", () => {
 
     it("refuses new text approved only for the old text", async () => {
       const old = comment(
-        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`
+        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`
       );
       const result = await gate(withHead(repos.editedInstructionHead, old));
       expect(result.exit).toBe(1);
@@ -540,7 +541,7 @@ describe("merge-gate", () => {
 
     it("does not count an approval line from an account that is not an owner, member or collaborator", async () => {
       const outsider = comment(
-        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`,
+        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`,
         "drive-by",
         false,
         "CONTRIBUTOR"
@@ -552,7 +553,7 @@ describe("merge-gate", () => {
 
     it("does not count an approval line posted by a bot", async () => {
       const bot = comment(
-        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`,
+        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`,
         "some-app[bot]",
         true
       );
