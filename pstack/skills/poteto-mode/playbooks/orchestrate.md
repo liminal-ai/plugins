@@ -73,7 +73,7 @@ A dependency is a context relay, not just ordering. Undeclared upstream context 
 - Critical sections you finish first: authoring a brief, a stack operation, a conflict decision, writing a gate, updating ledger or frontier.
 - Each drain classifies every pointer (landed, needs-verify, failed, zombie, noise), writes the resulting rows through `orch unit add`, `orch unit set`, and `orch ledger record`, runs `orch status`, then spawns the next wave in one message.
 - Account for every spawned child at its track's rollup: arrived, respawned, or its scope explicitly absorbed. Silently redoing a missing child's work hides both the wasted spend and the coverage gap its result existed to close.
-- A drain turn ends with the three lines from `orch status`: counts against the states, what changed, gates open. Detail lives in `status.md`. The full reply contract applies at checkpoints and close.
+- A drain turn ends with what changed and the gates open, from `orch status`. Counts and detail live in `status.md`. The full reply contract applies at checkpoints and close.
 
 #### Stack safety
 
@@ -109,4 +109,4 @@ Never reaches the human: frontier nudges, rebase mechanics, retries, CI flake tr
 
 Mid-run discoveries fix only what blocks the frontier. Everything else parks in follow-ups. At this fan-out a small scope leak multiplies into PRs nobody asked for.
 
-**Reply:** at checkpoints and close: the predicate and the count against it from `units.tsv` and `ledger.tsv`, tracks and what each landed, the frontier (PR list plus SHAs), verdicts summary, what was abandoned and why, gates awaiting the human (the only asks), the store path, and the trail path. Numbers from the tables, not narrative. Include PR links.
+**Reply:** at checkpoints and close, written per the "Reporting to the human" section of the role file: where the predicate stands, what each track landed, the frontier, verdicts, what was abandoned and why, gates awaiting the human (the only asks), the store path, and the trail path, with PR links. Give a count only when it changes a decision, and take it from `units.tsv` and `ledger.tsv`, not narrative. `status.md` holds the rest.
