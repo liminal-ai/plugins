@@ -55,14 +55,39 @@ function gitRepo(t) {
   const repo = mkdtempSync(join(base, "retro-test-repo-"));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf-8" });
+  const remote = `${repo}.remote`;
+  t.after(() => rmSync(remote, { recursive: true, force: true }));
+  spawnSync("git", ["init", "-q", "--bare", remote]);
   git("init", "-q");
   git("config", "user.email", "t@example.com");
   git("config", "user.name", "t");
+  git("remote", "add", "origin", remote);
   writeFileSync(join(repo, "decisions.tsv"), "ts\tphase\n");
   git("add", ".");
   git("commit", "-qm", "trail");
+  git("push", "-q", "-u", "origin", "HEAD");
   return { repo, git };
 }
+
+// Makes the sandbox's retro folder a repo whose backup remote is a local bare repo.
+function backedUp(t, store) {
+  const retro = join(store, "retro");
+  const remote = join(scratchDir(t), "pstack-retros.git");
+  const git = (...args) => spawnSync("git", ["-C", retro, ...args], { encoding: "utf-8" });
+  const remoteGit = (...args) => spawnSync("git", ["--git-dir", remote, ...args], { encoding: "utf-8" });
+  spawnSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  mkdirSync(retro, { recursive: true });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@example.com");
+  git("config", "user.name", "t");
+  git("remote", "add", "origin", remote);
+  writeFileSync(join(retro, ".gitignore"), ".lock\n*.tmp-*\n");
+  const pushed = () => remoteGit("log", "--format=%s", "main").stdout.trim().split("\n").filter(Boolean);
+  const pushedFiles = () => remoteGit("ls-tree", "-r", "--name-only", "main").stdout.trim().split("\n");
+  return { remote, git, pushed, pushedFiles };
+}
+
+const FAKE_KEY = `-----BEGIN OPENSSH PRIVATE KEY-----\n${"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW".repeat(3)}\n-----END OPENSSH PRIVATE KEY-----\n`;
 
 test("a thread without a reflect is listed but not waiting", (t) => {
   const { run } = sandbox(t);
@@ -116,11 +141,11 @@ test("copied trails keep every version; an unchanged source adds none", (t) => {
   run(["register", A, "--trail", file, "--trail", join(store, "audit", "run.tsv")], "2026-10-01T09:00:00Z");
   run(["register", A, "--trail", file], "2026-10-01T10:00:00Z");
   assert.equal(record(A).trails.length, 2, "unchanged source makes no new version");
-  assert.equal(record(A).trails.find((x) => x.mode === "linked").path, join(store, "audit", "run.tsv"));
+  assert.equal(record(A).trails.find((x) => x.source === join(store, "audit", "run.tsv")).mode, "copied", "the store outside the retro folder is not backed up");
 
   writeFileSync(file, "replacement flags\n");
   run(["register", A, "--trail", file], "2026-10-01T11:00:00Z");
-  const copies = record(A).trails.filter((x) => x.mode === "copied");
+  const copies = record(A).trails.filter((x) => x.source === file);
   assert.equal(copies.length, 2);
   assert.equal(readFileSync(copies[0].path, "utf-8"), "first flags\n");
   assert.equal(readFileSync(copies[1].path, "utf-8"), "replacement flags\n");
@@ -141,8 +166,9 @@ test("symlinked trails are materialized or linked by their real target", (t) => 
   symlinkSync(join(scratch, "evidence.md"), join(scratch, "alias", "evidence.md"));
   mkdirSync(join(store, "audit"), { recursive: true });
   symlinkSync(join(scratch, "evidence.md"), join(store, "audit", "points-out.md"));
-  writeFileSync(join(store, "audit", "real.tsv"), "row\n");
-  symlinkSync(join(store, "audit", "real.tsv"), join(scratch, "alias-to-store.tsv"));
+  mkdirSync(join(store, "retro", "notes"), { recursive: true });
+  writeFileSync(join(store, "retro", "notes", "real.tsv"), "row\n");
+  symlinkSync(join(store, "retro", "notes", "real.tsv"), join(scratch, "alias-to-store.tsv"));
 
   run(["register", A, "--trail", join(scratch, "alias"), "--trail", join(store, "audit", "points-out.md"), "--trail", join(scratch, "alias-to-store.tsv")]);
   const trails = record(A).trails;
@@ -153,16 +179,23 @@ test("symlinked trails are materialized or linked by their real target", (t) => 
     for (const f of files) assert.equal(readFileSync(f, "utf-8"), "e\n", `${f} survives its source`);
   }
   assert.equal(trails.filter((x) => x.mode === "copied").length, 2);
-  assert.equal(trails.find((x) => x.mode === "linked").path, join(store, "audit", "real.tsv"));
+  assert.equal(trails.find((x) => x.mode === "linked").path, join(store, "retro", "notes", "real.tsv"));
 });
 
-test("a committed clean trail is linked; modified or in a linked worktree it is copied", (t) => {
+test("a committed, clean, pushed trail is linked; unpushed, modified or in a linked worktree it is copied", (t) => {
   const { run, record } = sandbox(t);
   const { repo, git } = gitRepo(t);
   const file = join(repo, "decisions.tsv");
   run(["register", A, "--trail", file]);
   assert.equal(record(A).trails[0].mode, "linked");
   assert.equal(record(A).trails[0].commit, git("rev-parse", "HEAD").stdout.trim());
+
+  const local = join(repo, "local.tsv");
+  writeFileSync(local, "row\n");
+  git("add", "local.tsv");
+  git("commit", "-qm", "local only");
+  run(["register", A, "--trail", local]);
+  assert.equal(record(A).trails[1].mode, "copied", "a commit no remote has is not a backup");
 
   writeFileSync(file, "ts\tphase\nedited\n");
   run(["register", B, "--trail", file]);
@@ -371,6 +404,7 @@ test("a trail that becomes committed keeps the records of its earlier copies", (
   writeFileSync(file, "ts\tphase\nrow\n");
   run(["register", A, "--trail", file]);
   git("commit", "-qam", "row");
+  git("push", "-q");
   run(["register", A, "--trail", file]);
   assert.deepEqual(record(A).trails.map((x) => x.mode), ["copied", "linked"]);
 });
@@ -494,4 +528,60 @@ test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const out = run(["backlog"]).out;
   assert.match(out, /## \[first\]\(t3-thread:\/\/v1\/aaaaaaaa[^\n]*\n\n- item one/);
   assert.doesNotMatch(out, /bbbbbbbb/);
+});
+
+test("each write commits the retro folder and pushes it to main", (t) => {
+  const { store, run, reflect } = sandbox(t);
+  const { pushed, pushedFiles } = backedUp(t, store);
+  const dir = reflect(A);
+  assert.deepEqual(pushed(), [`retro: register ${A}`, `retro: reflect ${A}`]);
+  assert.ok(pushedFiles().includes(`${A}/${dir.split("/").at(-1)}/synthesis.md`));
+  assert.ok(pushedFiles().includes("REGISTRY.md"));
+  assert.ok(!pushedFiles().includes(".lock"), "the lock file is never backed up");
+  run(["open", "--at", "2026-10-20"]);
+  for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(store, "retro", "rounds", "2026-10-20", f), "x\n");
+  run(["close", "2026-10-20", "--at", "2026-10-20"]);
+  run(["remind", "--answered"]);
+  assert.deepEqual(pushed().slice(0, 3), ["retro: remind answered", "retro: close round 2026-10-20", "retro: open round 2026-10-20"]);
+});
+
+test("a failed push never fails the command, and the next write pushes what waited", (t) => {
+  const { store, run } = sandbox(t);
+  const { remote, git, pushed } = backedUp(t, store);
+  git("remote", "set-url", "origin", `${remote}-missing`);
+  const failed = run(["register", A]);
+  assert.equal(failed.code, 0);
+  assert.match(failed.err, /retro backup push failed/);
+  assert.equal(JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8")).failure.step, "push");
+  assert.deepEqual(pushed(), []);
+  git("remote", "set-url", "origin", remote);
+  assert.equal(run(["register", B]).err, "");
+  assert.deepEqual(pushed(), [`retro: register ${B}`, `retro: register ${A}`]);
+  assert.equal(JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8")).failure, null);
+});
+
+test("a possible secret blocks the commit and push and heads REGISTRY.md until it is removed", (t) => {
+  const { store, run, home } = sandbox(t);
+  const { git, pushed } = backedUp(t, store);
+  run(["register", A]);
+  writeFileSync(join(home(A), "notes.md"), `context\n${FAKE_KEY}`);
+  const blocked = run(["register", A]);
+  assert.equal(blocked.code, 0);
+  assert.match(blocked.err, new RegExp(`possible secret in ${join(home(A), "notes.md")} \\((private key|gitleaks private-key)\\)`));
+  assert.match(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), new RegExp(`^# Retro registry\n\n## Not backed up: possible secrets\n\n- \`${A}/notes.md\``));
+  assert.deepEqual(pushed(), [`retro: register ${A}`]);
+  assert.equal(git("diff", "--cached", "--name-only").stdout, "", "nothing is left staged");
+
+  writeFileSync(join(home(A), "notes.md"), "context\n");
+  run(["register", A]);
+  assert.equal(pushed().length, 2);
+  assert.doesNotMatch(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /possible secrets/);
+});
+
+test("a trail inside the retro folder is linked, since the backup already holds it", (t) => {
+  const { store, run, record } = sandbox(t);
+  mkdirSync(join(store, "retro", "notes"), { recursive: true });
+  writeFileSync(join(store, "retro", "notes", "log.tsv"), "row\n");
+  run(["register", A, "--trail", join(store, "retro", "notes", "log.tsv")]);
+  assert.equal(record(A).trails[0].mode, "linked");
 });

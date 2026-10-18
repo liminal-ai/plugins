@@ -43,6 +43,22 @@ const STORE = storeDir();
 const RETRO = join(STORE, "retro");
 const ROUNDS = join(RETRO, "rounds");
 const LOCK = join(RETRO, ".lock");
+const GIT_DIR = join(RETRO, ".git");
+const BACKUP_STATE = join(GIT_DIR, "retro-backup.json");
+const GITLEAKS_REPORT = join(GIT_DIR, "retro-gitleaks.json");
+const PUSH_TIMEOUT_MS = 15000;
+
+// Used when gitleaks is not installed. Each pattern is specific enough not to match ordinary prose.
+const SECRET_PATTERNS = [
+  ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,})/],
+  ["Anthropic or OpenAI key", /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{32,}/],
+  ["Slack token", /\bxox[abprs]-[0-9A-Za-z-]{10,}/],
+  ["Google API key", /\bAIza[0-9A-Za-z_-]{35}/],
+  ["Stripe live key", /\b[rs]k_live_[0-9A-Za-z]{20,}/],
+  ["Linear API key", /\blin_api_[0-9A-Za-z]{40}/],
+];
 
 function now() {
   return process.env.RETRO_NOW ? new Date(process.env.RETRO_NOW) : new Date();
@@ -181,10 +197,11 @@ function walk(dir) {
   });
 }
 
+// A trail is linked only when the backup can always recover it: it is in the retro folder, or committed, clean and pushed.
 function trailMode(target) {
   const hasLinks = statSync(target).isDirectory() && walk(target).some((p) => lstatSync(p).isSymbolicLink());
   if (hasLinks) return { mode: "copied" };
-  if (within(target, real(STORE))) return { mode: "linked" };
+  if (within(target, real(RETRO))) return { mode: "linked" };
   if (within(target, real(tmpdir())) || within(target, "/tmp")) return { mode: "copied" };
   const dir = statSync(target).isDirectory() ? target : dirname(target);
   const git = (...args) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8" });
@@ -195,7 +212,9 @@ function trailMode(target) {
   const tracked = git("ls-files", "--", target).stdout.trim() !== "";
   const dirty = git("status", "--porcelain", "--ignored", "--", target).stdout.trim() !== "";
   if (!tracked || dirty) return { mode: "copied" };
-  return { mode: "linked", commit: git("log", "-1", "--format=%H", "--", target).stdout.trim() };
+  const commit = git("log", "-1", "--format=%H", "--", target).stdout.trim();
+  const pushed = git("branch", "-r", "--contains", commit).stdout.trim() !== "";
+  return pushed ? { mode: "linked", commit } : { mode: "copied" };
 }
 
 function digest(path) {
@@ -285,7 +304,7 @@ function cmdReflect(args) {
   const dir = unique(join(home, `reflect-${compact(at)}`));
   mkdirSync(dir);
   writeJson(file, rec);
-  refreshRegistry();
+  save(`reflect ${rec.thread}`);
   console.log(dir);
 }
 
@@ -299,7 +318,7 @@ function cmdRegister(args) {
   for (const plan of plans) applyTrail(home, rec, plan, at);
   if (dir && !rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
   writeJson(file, rec);
-  refreshRegistry();
+  save(`register ${rec.thread}`);
   console.log(home);
 }
 
@@ -342,9 +361,20 @@ function renderRegistry(state, at) {
   const due = dueReason(state, at);
   const table = (rows, head) => (rows.length ? [head, head.replace(/[^|]+/g, "---"), ...rows] : ["None."]);
   const decided = (t) => (pendingReflects(t, rounds).some((c) => isFile(join(c.dir, "decisions.md"))) ? "yes" : "no");
+  const { secrets } = backupState();
   const lines = [
     "# Retro registry",
     "",
+    ...(secrets.length
+      ? [
+          "## Not backed up: possible secrets",
+          "",
+          ...secrets.map((x) => `- \`${x.file}\`: ${x.pattern}`),
+          "",
+          "Nothing is committed or pushed until each one is removed. The next retro command that writes checks again.",
+          "",
+        ]
+      : []),
     `Generated ${stamp(at)} by \`${SELF} status\`. Do not edit by hand.`,
     "",
     `Round due: ${due.due ? "yes" : "no"}, ${due.reason}.`,
@@ -382,6 +412,80 @@ function refreshRegistry() {
   const text = renderRegistry(load(), now());
   writeAtomic(join(RETRO, "REGISTRY.md"), text);
   return text;
+}
+
+function git(...args) {
+  return spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", maxBuffer: 1 << 30, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+}
+
+function backupState() {
+  try {
+    return JSON.parse(readFileSync(BACKUP_STATE, "utf-8"));
+  } catch {
+    return { secrets: [], failure: null };
+  }
+}
+
+// Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
+function scanStaged() {
+  const leaks = spawnSync(
+    "gitleaks",
+    ["git", "--pre-commit", "--staged", "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
+    { encoding: "utf-8" },
+  );
+  if (leaks.error?.code !== "ENOENT") {
+    if (leaks.status === 0) return [];
+    try {
+      if (leaks.status === 3) return JSON.parse(readFileSync(GITLEAKS_REPORT, "utf-8")).map((f) => ({ file: f.File, pattern: `gitleaks ${f.RuleID}` }));
+    } catch {}
+    return [{ file: ".", pattern: `gitleaks did not finish: ${(leaks.stderr || leaks.error?.message || `exit ${leaks.status}`).trim().split("\n").at(-1)}` }];
+  }
+  const hits = new Map();
+  let file = null;
+  let header = false;
+  for (const line of git("-c", "core.quotePath=false", "diff", "--cached", "--no-color", "--no-ext-diff", "-U0").stdout.split("\n")) {
+    if (line.startsWith("diff --git ")) header = true;
+    else if (header && line.startsWith("+++ ")) file = line === "+++ /dev/null" ? null : line.slice(6);
+    else if (line.startsWith("@@")) header = false;
+    else if (!header && file && line.startsWith("+")) {
+      for (const [pattern, re] of SECRET_PATTERNS) if (re.test(line)) hits.set(`${file}\0${pattern}`, { file, pattern });
+    }
+  }
+  return [...hits.values()];
+}
+
+function backupFailed(state, step, r) {
+  const error = (r.stderr || r.error?.message || `exit ${r.status}`).trim().split("\n").at(-1);
+  writeJson(BACKUP_STATE, { ...state, failure: { at: stamp(now()), step, error } });
+  console.error(`warning: retro backup ${step} failed (${error}); the next retro command that writes tries again`);
+}
+
+// Every write ends here. A backup failure never fails the command: the work stays on disk and the next write retries.
+function save(message) {
+  if (!existsSync(GIT_DIR)) {
+    refreshRegistry();
+    return console.error(`warning: ${RETRO} is not a git repo, so nothing is backed up`);
+  }
+  git("add", "-A");
+  const state = { ...backupState(), secrets: scanStaged() };
+  writeJson(BACKUP_STATE, state);
+  refreshRegistry();
+  if (state.secrets.length) {
+    git("reset", "-q");
+    for (const x of state.secrets) console.error(`retro: possible secret in ${join(RETRO, x.file)} (${x.pattern}); nothing is committed or pushed until it is removed`);
+    return;
+  }
+  git("add", "-A");
+  if (git("diff", "--cached", "--quiet").status !== 0) {
+    const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`);
+    if (commit.status !== 0) return backupFailed(state, "commit", commit);
+  }
+  const unpushed = git("rev-list", "--count", "HEAD", "--not", "--remotes=origin");
+  if (unpushed.status !== 0 || unpushed.stdout.trim() !== "0") {
+    const push = spawnSync("git", ["-C", RETRO, "push", "-q", "origin", "HEAD:main"], { encoding: "utf-8", timeout: PUSH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    if (push.status !== 0) return backupFailed(state, "push", push);
+  }
+  if (state.failure) writeJson(BACKUP_STATE, { ...state, failure: null });
 }
 
 function cmdStatus() {
@@ -472,7 +576,7 @@ function cmdOpen(args) {
   writeAtomic(join(dir, "README.md"), roundReadme(round, state));
   writeAtomic(join(dir, "backlog.md"), gatherBacklog(ids.map((id) => ({ id, dirs: reflects.filter((d) => within(d, join(RETRO, id))) })), state.threads));
   writeJson(join(dir, "round.json"), round);
-  refreshRegistry();
+  save(`open round ${round.round}`);
   console.log(dir);
 }
 
@@ -491,7 +595,7 @@ function cmdClose(args) {
   if (closedAt < new Date(round.openedAt)) refuse(`round ${id} opened at ${round.openedAt}; it cannot close before that`);
   round.closedAt = stamp(closedAt);
   writeJson(file, round);
-  refreshRegistry();
+  save(`close round ${id}`);
   console.log(`closed round ${id}`);
 }
 
@@ -508,6 +612,7 @@ function cmdRemind(args) {
   const last = (existsSync(file) && readJson(file, [])) || {};
   if (args.answered) {
     writeJson(file, { ...last, lastAnsweredAt: stamp(at) });
+    save("remind answered");
     return console.log("recorded the answer");
   }
   const { due, reason } = dueReason(load(), at);
