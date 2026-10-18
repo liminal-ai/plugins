@@ -395,6 +395,25 @@ test("close refuses a time before the round opened", (t) => {
   assert.equal(run(["close", "2026-10-20", "--at", "2026-10-20"]).code, 0);
 });
 
+test("an earlier retro takes no waiting reflects unless named", (t) => {
+  const { store, run, reflect } = sandbox(t);
+  reflect(A);
+  run(["open", "--at", "2026-10-16", "--earlier", "old"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(store, "retro", "rounds", "2026-10-16", "round.json"), "utf-8")).threads, []);
+});
+
+test("other inputs are copied into the round", (t) => {
+  const { store, run, reflect } = sandbox(t);
+  const scratch = scratchDir(t);
+  writeFileSync(join(scratch, "audit.md"), "a\n");
+  reflect(A);
+  run(["open", "--at", "2026-10-20", "--input", join(scratch, "audit.md")]);
+  rmSync(join(scratch, "audit.md"));
+  const dir = join(store, "retro", "rounds", "2026-10-20");
+  assert.equal(readFileSync(join(dir, "inputs", "other", "audit.md"), "utf-8"), "a\n");
+  assert.match(readFileSync(join(dir, "README.md"), "utf-8"), /copied to `inputs\/other\/audit\.md`/);
+});
+
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);

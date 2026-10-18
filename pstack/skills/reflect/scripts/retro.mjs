@@ -398,7 +398,7 @@ function roundReadme(round, state) {
     for (const x of currentTrails(t).filter((x) => x.mode === "linked")) lines.push(`- Linked trail: \`${x.path}\`${x.commit ? ` at ${x.commit.slice(0, 12)}` : ""}`);
     lines.push("");
   }
-  if (round.inputs.length) lines.push("## Other inputs", "", ...round.inputs.map((p) => `- \`${p}\``), "");
+  if (round.inputs.length) lines.push("## Other inputs", "", ...round.inputs.map((x) => `- \`${x.source}\`, copied to \`${relative(join(ROUNDS, round.round), x.copy)}\``), "");
   lines.push(
     "## Outputs, needed before close",
     "",
@@ -429,7 +429,9 @@ function cmdOpen(args) {
   const ids =
     args.threads !== undefined
       ? [...new Set(args.threads.split(",").map((s) => s.trim()).filter(Boolean))]
-      : [...state.threads.values()].filter((t) => statusOf(t, state.rounds).kind === "waiting").map((t) => t.thread);
+      : args.earlier
+        ? []
+        : [...state.threads.values()].filter((t) => statusOf(t, state.rounds).kind === "waiting").map((t) => t.thread);
   for (const id of ids) {
     const t = state.threads.get(id);
     if (!t) refuse(`thread ${id} is not registered; run register first`);
@@ -440,16 +442,21 @@ function cmdOpen(args) {
   for (const p of args.input) if (!existsSync(p)) refuse(`input not found: ${p}`);
   const reflects = ids.flatMap((id) => pendingReflects(state.threads.get(id), state.rounds).map((c) => c.dir));
   const dir = unique(join(ROUNDS, day(at)));
-  const round = { round: basename(dir), openedAt: stamp(at), closedAt: null, threads: ids, reflects, inputs: args.input.map((p) => resolve(p)), earlier: args.earlier ?? null };
-  mkdirSync(dir, { recursive: true });
-  mkdirSync(join(dir, "inputs"));
-  for (const id of ids) {
+  const inputs = args.input.map((p) => ({ source: resolve(p), copy: null }));
+  const round = { round: basename(dir), openedAt: stamp(at), closedAt: null, threads: ids, reflects, inputs, earlier: args.earlier ?? null };
+  const snapshot = (src, dest) => {
     try {
-      copyResolved(join(RETRO, id), join(dir, "inputs", id));
+      copyResolved(src, dest);
     } catch (err) {
       rmSync(dir, { recursive: true, force: true });
-      refuse(`cannot copy ${join(RETRO, id)} into the round: ${err.message}`);
+      refuse(`cannot copy ${src} into the round: ${err.message}`);
     }
+  };
+  mkdirSync(join(dir, "inputs", "other"), { recursive: true });
+  for (const id of ids) snapshot(join(RETRO, id), join(dir, "inputs", id));
+  for (const input of inputs) {
+    input.copy = unique(join(dir, "inputs", "other", basename(input.source)));
+    snapshot(input.source, input.copy);
   }
   writeAtomic(join(dir, "README.md"), roundReadme(round, state));
   writeAtomic(join(dir, "backlog.md"), gatherBacklog(ids.map((id) => ({ id, dirs: reflects.filter((d) => within(d, join(RETRO, id))) })), state.threads));
