@@ -466,6 +466,7 @@ describe("merge-gate", () => {
           `${repos.git(repos.remote, "diff-tree", "-r", "--no-renames", "--full-index", "--abbrev=40", repos.main, head, "--", "AGENTS.md", "sub/Claude.md")}\n`
         )
         .digest("hex");
+    const approvedIn = "approved-in: 55835e2a-d498-4643-95ce-a3a0eb4f736b";
     const withHead = (
       head: string,
       ...extra: ReturnType<typeof comment>[]
@@ -474,7 +475,7 @@ describe("merge-gate", () => {
       comments: [...approvals(head), ...extra],
     });
 
-    it("refuses an AGENTS.md or CLAUDE.md change without approval and prints the exact line for Lee", async () => {
+    it("refuses an AGENTS.md or CLAUDE.md change without approval and prints the lines to post", async () => {
       const result = await gate(withHead(repos.instructionHead));
       expect(result.exit).toBe(1);
       expect(result.missing[0]).toContain(
@@ -485,7 +486,20 @@ describe("merge-gate", () => {
       );
     });
 
-    it("is met when Lee approved this exact text", async () => {
+    it("is met when Lee approved this exact text in a T3 thread", async () => {
+      const result = await gate(
+        withHead(
+          repos.instructionHead,
+          comment(
+            `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}\n> yes, ship that exact text`
+          )
+        )
+      );
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain("met: Instruction-file approval");
+    });
+
+    it("refuses the hash line without the approved-in line", async () => {
       const result = await gate(
         withHead(
           repos.instructionHead,
@@ -494,13 +508,26 @@ describe("merge-gate", () => {
           )
         )
       );
-      expect(result.exit).toBe(0);
-      expect(result.out).toContain("met: Instruction-file approval");
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("\n  approved-in: <T3 thread id>\n");
+    });
+
+    it("refuses the two lines split across comments", async () => {
+      const result = await gate(
+        withHead(
+          repos.instructionHead,
+          comment(
+            `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`
+          ),
+          comment(approvedIn)
+        )
+      );
+      expect(result.exit).toBe(1);
     });
 
     it("refuses new text approved only for the old text", async () => {
       const old = comment(
-        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`
+        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`
       );
       const result = await gate(withHead(repos.editedInstructionHead, old));
       expect(result.exit).toBe(1);
@@ -514,7 +541,7 @@ describe("merge-gate", () => {
 
     it("does not count an approval line from an account that is not an owner, member or collaborator", async () => {
       const outsider = comment(
-        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`,
+        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`,
         "drive-by",
         false,
         "CONTRIBUTOR"
@@ -526,9 +553,10 @@ describe("merge-gate", () => {
 
     it("does not count an approval line posted by a bot", async () => {
       const bot = comment(
-        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`,
+        `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\n${approvedIn}`,
         "some-app[bot]",
-        true
+        true,
+        "MEMBER"
       );
       const result = await gate(withHead(repos.instructionHead, bot));
       expect(result.exit).toBe(1);
