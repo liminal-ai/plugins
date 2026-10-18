@@ -216,10 +216,10 @@ test("a round gathers waiting threads, refuses a second open, and closes only wi
   assert.match(run(["close", "2026-10-20"]).err, /missing merge-gate\.md/, "a directory is not an output");
   rmSync(join(dir, "merge-gate.md"), { recursive: true });
   writeFileSync(join(dir, "merge-gate.md"), "m\n");
-  assert.equal(run(["close", "2026-10-20"]).code, 0);
+  assert.equal(run(["close", "2026-10-20", "--at", "2026-10-20"]).code, 0);
 
   const status = run(["status"]).out;
-  assert.match(status, /\| 2026-10-20 \| closed 2026-10-\d\d \|/);
+  assert.match(status, /\| 2026-10-20 \| closed 2026-10-20 \|/);
   assert.match(status, /## Waiting for a round\n\nNone\./);
   assert.doesNotMatch(status, /## Problems/);
   assert.match(run(["open", "--threads", A]).err, /was retro'd in round 2026-10-20/);
@@ -360,6 +360,39 @@ test("parallel registrations of one thread keep every trail", async (t) => {
   files.forEach((f) => writeFileSync(f, "row\n"));
   await Promise.all(files.map((f) => new Promise((done) => spawn(process.execPath, [script, "register", A, "--trail", f], { env: env() }).on("exit", done))));
   assert.equal(record(A).trails.length, 6);
+});
+
+test("a trail that becomes committed keeps the records of its earlier copies", (t) => {
+  const { run, record } = sandbox(t);
+  const { repo, git } = gitRepo(t);
+  const file = join(repo, "decisions.tsv");
+  writeFileSync(file, "ts\tphase\nrow\n");
+  run(["register", A, "--trail", file]);
+  git("commit", "-qam", "row");
+  run(["register", A, "--trail", file]);
+  assert.deepEqual(record(A).trails.map((x) => x.mode), ["copied", "linked"]);
+});
+
+test("round inputs copy the targets of symlinks in a thread's home", (t) => {
+  const { store, run, home, reflect } = sandbox(t);
+  const scratch = scratchDir(t);
+  writeFileSync(join(scratch, "notes.md"), "n\n");
+  const dir = reflect(A);
+  symlinkSync(join(scratch, "notes.md"), join(dir, "notes.md"));
+  run(["open", "--at", "2026-10-20"]);
+  rmSync(join(scratch, "notes.md"));
+  const copied = join(store, "retro", "rounds", "2026-10-20", "inputs", A, dir.slice(home(A).length + 1), "notes.md");
+  assert.equal(readFileSync(copied, "utf-8"), "n\n");
+});
+
+test("close refuses a time before the round opened", (t) => {
+  const { store, run, reflect } = sandbox(t);
+  reflect(A);
+  run(["open", "--at", "2026-10-20"]);
+  const dir = join(store, "retro", "rounds", "2026-10-20");
+  for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(dir, f), "x\n");
+  assert.match(run(["close", "2026-10-20", "--at", "2026-10-19"]).err, /cannot close before/);
+  assert.equal(run(["close", "2026-10-20", "--at", "2026-10-20"]).code, 0);
 });
 
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {

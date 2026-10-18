@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -231,7 +231,7 @@ function addTrail(home, rec, path, at) {
   const target = real(source);
   const { mode, commit } = trailMode(target);
   if (mode === "linked") {
-    rec.trails = rec.trails.filter((t) => t.source !== source).concat({ source, mode, path: target, ...(commit && { commit }), at: stamp(at) });
+    rec.trails = rec.trails.filter((t) => !(t.source === source && t.mode === "linked")).concat({ source, mode, path: target, ...(commit && { commit }), at: stamp(at) });
     return;
   }
   let sum;
@@ -442,7 +442,15 @@ function cmdOpen(args) {
   const dir = unique(join(ROUNDS, day(at)));
   const round = { round: basename(dir), openedAt: stamp(at), closedAt: null, threads: ids, reflects, inputs: args.input.map((p) => resolve(p)), earlier: args.earlier ?? null };
   mkdirSync(dir, { recursive: true });
-  for (const id of ids) cpSync(join(RETRO, id), join(dir, "inputs", id), { recursive: true });
+  mkdirSync(join(dir, "inputs"));
+  for (const id of ids) {
+    try {
+      copyResolved(join(RETRO, id), join(dir, "inputs", id));
+    } catch (err) {
+      rmSync(dir, { recursive: true, force: true });
+      refuse(`cannot copy ${join(RETRO, id)} into the round: ${err.message}`);
+    }
+  }
   writeAtomic(join(dir, "README.md"), roundReadme(round, state));
   writeAtomic(join(dir, "backlog.md"), gatherBacklog(ids.map((id) => ({ id, dirs: reflects.filter((d) => within(d, join(RETRO, id))) })), state.threads));
   writeJson(join(dir, "round.json"), round);
@@ -461,7 +469,9 @@ function cmdClose(args) {
   const required = round.earlier ? ["synthesis.md"] : ROUND_OUTPUTS;
   const missing = required.filter((f) => !isFile(join(ROUNDS, id, f)));
   if (missing.length) refuse(`round ${id} is missing ${missing.join(", ")} in ${join(ROUNDS, id)}`);
-  round.closedAt = stamp(atOrNow(args.at));
+  const closedAt = atOrNow(args.at);
+  if (closedAt < new Date(round.openedAt)) refuse(`round ${id} opened at ${round.openedAt}; it cannot close before that`);
+  round.closedAt = stamp(closedAt);
   writeJson(file, round);
   refreshRegistry();
   console.log(`closed round ${id}`);
