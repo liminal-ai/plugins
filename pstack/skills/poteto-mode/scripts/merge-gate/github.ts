@@ -176,7 +176,9 @@ export class GhGitHub implements GitHub {
       );
       for (const node of list(contexts.nodes, "contexts.nodes")) {
         const check = mapRollupNode(node);
-        if (check !== null) checks.push(check);
+        if (check === null)
+          readError(`a check on ${head} came back in a shape the gate cannot read`);
+        checks.push(check);
       }
       after = nextCursor(contexts.pageInfo, "contexts.pageInfo");
     } while (after !== null);
@@ -247,7 +249,7 @@ export class GhGitHub implements GitHub {
           id: comment.id as number,
           author: string(user.login, "comment.user.login"),
           isBot: user.type === "Bot",
-          body: string(comment.body ?? "", "comment.body"),
+          body: string(comment.body, "comment.body"),
           createdAt: string(comment.created_at, "comment.created_at"),
           updatedAt: string(comment.updated_at, "comment.updated_at"),
           url: string(comment.html_url, "comment.html_url"),

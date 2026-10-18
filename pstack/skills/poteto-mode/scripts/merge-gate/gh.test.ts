@@ -239,6 +239,35 @@ for (const [label, name, value] of [
     "threads.json",
     threadsPage({ hasNextPage: true, endCursor: null }),
   ],
+  [
+    "a failed check with no __typename",
+    "checks.json",
+    checksPage({
+      statusCheckRollup: {
+        contexts: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [
+            { name: "ci", status: "COMPLETED", conclusion: "FAILURE" },
+          ],
+        },
+      },
+    }),
+  ],
+  [
+    "a comment with no body",
+    "comments.json",
+    [
+      [
+        {
+          id: 9,
+          user: { login: "leegmoore", type: "User" },
+          created_at: "2026-01-01T00:00:09Z",
+          updated_at: "2026-01-01T00:00:09Z",
+          html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+        },
+      ],
+    ],
+  ],
 ] as const) {
   it(`treats ${label} as a read error and merges nothing`, async () => {
     const result = await checkWith(name, value);
