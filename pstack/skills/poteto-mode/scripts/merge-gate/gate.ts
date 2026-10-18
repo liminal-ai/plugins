@@ -121,6 +121,7 @@ const VERDICT_PREFIX = "pstack-verdict:";
 const VERDICT_LINE =
   /^pstack-verdict: (PASS\+NOTES|PASS|FAIL) head=([0-9a-f]{40}) base=([0-9a-f]{40}) by=(\S+)$/;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
+const APPROVED_IN = /^approved-in: \S+$/;
 const CODEX_LOGINS = new Set([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
@@ -386,19 +387,22 @@ const instructionApproval: Requirement = {
     if (instructionFiles === null)
       return met("no AGENTS.md or CLAUDE.md changes");
     const line = `${APPROVAL_PREFIX} ${instructionFiles.approvalHash}`;
-    const approved = comments.some(
-      (comment) =>
+    const approved = comments.some((comment) => {
+      const body = lines(comment.body);
+      return (
         !comment.isBot &&
         speaksForRepo(comment) &&
-        lines(comment.body).includes(line)
-    );
+        body.includes(line) &&
+        body.some((l) => APPROVED_IN.test(l))
+      );
+    });
     if (approved)
       return met(
         `Lee approved the exact text of ${instructionFiles.paths.join(", ")}`
       );
     return unmet(
-      `The PR changes ${instructionFiles.paths.join(", ")}. To approve that exact text, Lee comments this line on the PR. Agents never post it:`,
-      [line]
+      `The PR changes ${instructionFiles.paths.join(", ")}. Show Lee that exact text in a T3 thread. Once Lee approves it there, the agent that showed it posts one comment with these lines, Lee's words quoted. Never post it without Lee's approval in chat:`,
+      [line, "approved-in: <T3 thread id>", "> <Lee's words>"]
     );
   },
 };

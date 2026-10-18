@@ -474,7 +474,7 @@ describe("merge-gate", () => {
       comments: [...approvals(head), ...extra],
     });
 
-    it("refuses an AGENTS.md or CLAUDE.md change without approval and prints the exact line for Lee", async () => {
+    it("refuses an AGENTS.md or CLAUDE.md change without approval and prints the lines to post", async () => {
       const result = await gate(withHead(repos.instructionHead));
       expect(result.exit).toBe(1);
       expect(result.missing[0]).toContain(
@@ -485,7 +485,20 @@ describe("merge-gate", () => {
       );
     });
 
-    it("is met when Lee approved this exact text", async () => {
+    it("is met when Lee approved this exact text in a T3 thread", async () => {
+      const result = await gate(
+        withHead(
+          repos.instructionHead,
+          comment(
+            `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}\napproved-in: 55835e2a-d498-4643-95ce-a3a0eb4f736b\n> yes, ship that exact text`
+          )
+        )
+      );
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain("met: Instruction-file approval");
+    });
+
+    it("refuses the hash line without the approved-in line", async () => {
       const result = await gate(
         withHead(
           repos.instructionHead,
@@ -494,8 +507,21 @@ describe("merge-gate", () => {
           )
         )
       );
-      expect(result.exit).toBe(0);
-      expect(result.out).toContain("met: Instruction-file approval");
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("\n  approved-in: <T3 thread id>\n");
+    });
+
+    it("refuses the two lines split across comments", async () => {
+      const result = await gate(
+        withHead(
+          repos.instructionHead,
+          comment(
+            `lee-approves-instruction-files: ${approvalHash(repos.instructionHead)}`
+          ),
+          comment("approved-in: 55835e2a-d498-4643-95ce-a3a0eb4f736b")
+        )
+      );
+      expect(result.exit).toBe(1);
     });
 
     it("refuses new text approved only for the old text", async () => {
