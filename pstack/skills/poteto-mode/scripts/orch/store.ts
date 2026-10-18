@@ -801,8 +801,18 @@ function standingAt(
   return row;
 }
 
+async function readStandingHistory(
+  store: string
+): Promise<readonly (readonly string[])[]> {
+  const path = join(store, "standing-history.tsv");
+  return (await exists(path))
+    ? readTsv(path, STANDING_HISTORY_HEADER, 6)
+    : [];
+}
+
 async function appendStandingHistory(
   store: string,
+  history: readonly (readonly string[])[],
   change: {
     readonly action: "edit" | "remove";
     readonly old: StandingLine;
@@ -811,11 +821,8 @@ async function appendStandingHistory(
   }
 ): Promise<void> {
   const path = join(store, "standing-history.tsv");
-  const rows = (await exists(path))
-    ? await readTsv(path, STANDING_HISTORY_HEADER, 6)
-    : [];
   await writeTsv(path, STANDING_HISTORY_HEADER, [
-    ...rows,
+    ...history,
     [
       new Date().toISOString(),
       change.action,
@@ -1758,11 +1765,12 @@ export function openStore(
         const line = requiredLine(params.line, "standing order");
         const rows = await readStanding(store);
         const old = standingAt(rows, params.number);
+        const history = await readStandingHistory(store);
         const orders = await saveStanding(
           store,
           rows.map((row) => (row.number === old.number ? line : row.line))
         );
-        await appendStandingHistory(store, {
+        await appendStandingHistory(store, history, {
           action: "edit",
           old,
           line,
@@ -1775,11 +1783,12 @@ export function openStore(
         const reason = requiredLine(params.reason, "reason");
         const rows = await readStanding(store);
         const old = standingAt(rows, params.number);
+        const history = await readStandingHistory(store);
         const orders = await saveStanding(
           store,
           rows.filter((row) => row.number !== old.number).map((row) => row.line)
         );
-        await appendStandingHistory(store, {
+        await appendStandingHistory(store, history, {
           action: "remove",
           old,
           line: "",

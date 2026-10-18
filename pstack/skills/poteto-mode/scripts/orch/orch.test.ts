@@ -969,6 +969,22 @@ describe("orch CLI", () => {
     );
   });
 
+  it("leaves the orders unchanged when the history file is corrupt", async () => {
+    const directory = await standingStore(["Alpha.", "Beta.", "Gamma."]);
+    await writeFile(join(directory, "standing-history.tsv"), "not a header\n");
+    for (const args of [
+      ["remove", "1", "--reason", "gone"],
+      ["edit", "1", "Alpha, revised."],
+    ]) {
+      const result = runCli(["--store", directory, "standing", ...args]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("standing-history.tsv has an invalid header");
+    }
+    expect(await storeFile(directory, "preferences.md")).toBe(
+      "1. Alpha.\n2. Beta.\n3. Gamma.\n"
+    );
+  });
+
   it("creates the history file on first write in a store made before it existed", async () => {
     const directory = await standingStore(["Alpha.", "Beta."]);
     await rm(join(directory, "standing-history.tsv"));
