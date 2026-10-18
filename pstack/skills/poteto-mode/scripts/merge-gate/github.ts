@@ -1,18 +1,26 @@
 import {
-  GhGitHubReader,
   at,
   firstLine,
   list,
   mapRollupNode,
   optionalString,
+  parsePullRequest,
   record,
   run,
   runJson,
   string,
 } from "../watch-pr/github.ts";
-import type { Check, Repository } from "../watch-pr/types.ts";
+import type { Repository } from "../watch-pr/types.ts";
 import { ReadError } from "./git.ts";
-import type { IssueComment, OpenThread, PrRef, PullRequest } from "./gate.ts";
+import {
+  AUTHOR_ASSOCIATIONS,
+  type AuthorAssociation,
+  type HeadCheck,
+  type IssueComment,
+  type OpenThread,
+  type PrRef,
+  type PullRequest,
+} from "./gate.ts";
 
 export interface MergeReadBack {
   readonly state: string;
@@ -29,7 +37,7 @@ export interface GitHub {
   defaultBranch(repo: Repository): Promise<string>;
   usesMergeQueue(repo: Repository, branch: string): Promise<boolean>;
   pullRequest(pr: PrRef): Promise<PullRequest>;
-  checks(repo: Repository, head: string): Promise<readonly Check[]>;
+  checks(repo: Repository, head: string): Promise<readonly HeadCheck[]>;
   openThreads(pr: PrRef): Promise<readonly OpenThread[]>;
   issueComments(pr: PrRef): Promise<readonly IssueComment[]>;
   merge(pr: PrRef, head: string): Promise<MergeAttempt>;
@@ -46,7 +54,7 @@ query HeadChecks($owner: String!, $repo: String!, $oid: GitObjectID!, $after: St
             pageInfo { hasNextPage endCursor }
             nodes {
               __typename
-              ... on CheckRun { name status conclusion detailsUrl }
+              ... on CheckRun { name status conclusion detailsUrl checkSuite { app { slug } } }
               ... on StatusContext { context state targetUrl }
             }
           }
@@ -86,6 +94,9 @@ const ACCOUNT_TYPES = new Set(["User", "Bot", "Organization", "Mannequin"]);
 
 const repoName = (repo: Repository): string => `${repo.owner}/${repo.repo}`;
 
+const isAssociation = (value: string): value is AuthorAssociation =>
+  (AUTHOR_ASSOCIATIONS as readonly string[]).includes(value);
+
 function graphql(
   query: string,
   repo: Repository,
@@ -118,13 +129,22 @@ function nextCursor(pageInfo: unknown, path: string): string | null {
   return page.endCursor;
 }
 
+/** A check run's app decides whether it is Bugbot's, so a run that cannot name its app is a read error. */
+function checkApp(node: unknown, name: string): string | null {
+  if (record(node, "check").__typename !== "CheckRun") return null;
+  const app = at(node, ["checkSuite", "app"]);
+  if (app === null) return null;
+  return string(
+    record(app, `check ${name} app`).slug,
+    `check ${name} app.slug`
+  );
+}
+
 function readError(detail: string): never {
   throw new ReadError(detail);
 }
 
 export class GhGitHub implements GitHub {
-  private readonly reader = new GhGitHubReader();
-
   async defaultBranch(repo: Repository): Promise<string> {
     const value = await runJson([
       "gh",
@@ -146,20 +166,39 @@ export class GhGitHub implements GitHub {
   }
 
   async pullRequest(pr: PrRef): Promise<PullRequest> {
-    const facts = await this.reader.pullRequest(pr);
+    const value = record(
+      await runJson([
+        "gh",
+        "pr",
+        "view",
+        String(pr.number),
+        "--repo",
+        repoName(pr),
+        "--json",
+        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft,autoMergeRequest",
+      ]),
+      "pull request"
+    );
+    const facts = parsePullRequest(value, pr);
     if (facts.headRefOid === null)
       readError(`PR #${pr.number} reports no head commit`);
+    if (!("autoMergeRequest" in value))
+      readError(`PR #${pr.number} came back without autoMergeRequest`);
+    if (value.autoMergeRequest !== null)
+      record(value.autoMergeRequest, "pull request.autoMergeRequest");
     return {
       state: facts.state,
       isDraft: facts.isDraft,
       mergeable: facts.mergeable,
       baseRefName: facts.baseRefName,
       headRefOid: facts.headRefOid,
+      reviewDecision: facts.reviewDecision,
+      autoMergeArmed: value.autoMergeRequest !== null,
     };
   }
 
-  async checks(repo: Repository, head: string): Promise<readonly Check[]> {
-    const checks: Check[] = [];
+  async checks(repo: Repository, head: string): Promise<readonly HeadCheck[]> {
+    const checks: HeadCheck[] = [];
     let after: string | null = null;
     do {
       const value = await graphql(CHECKS_QUERY, repo, {
@@ -183,7 +222,7 @@ export class GhGitHub implements GitHub {
           readError(
             `a check on ${head} came back in a shape the gate cannot read`
           );
-        checks.push(check);
+        checks.push({ ...check, app: checkApp(node, check.name) });
       }
       after = nextCursor(contexts.pageInfo, "contexts.pageInfo");
     } while (after !== null);
@@ -262,10 +301,19 @@ export class GhGitHub implements GitHub {
         const type = string(user.type, "comment.user.type");
         if (!ACCOUNT_TYPES.has(type))
           readError(`comment ${id} has an unknown account type ${type}`);
+        const association = string(
+          comment.author_association,
+          "comment.author_association"
+        );
+        if (!isAssociation(association))
+          readError(
+            `comment ${id} has an unknown author_association ${association}`
+          );
         return {
           id,
           author: login,
           isBot: type !== "User",
+          association,
           body: string(comment.body, "comment.body"),
           createdAt: string(comment.created_at, "comment.created_at"),
           updatedAt: string(comment.updated_at, "comment.updated_at"),

@@ -4,8 +4,10 @@ import {
   type PrRef,
   type VerdictFact,
   findVerdictLine,
+  hasVerdictLine,
   isInstructionFile,
   parseVerdictLine,
+  speaksForRepo,
 } from "./gate.ts";
 import type { Git } from "./git.ts";
 import { ReadError } from "./git.ts";
@@ -35,8 +37,13 @@ export async function readFacts(
   const mergeBase = git.mergeBase(baseTip, head);
   const currentHash = git.verdictHash(mergeBase, head);
 
-  const found = findVerdictLine(comments);
-  let verdict: VerdictFact = { kind: "none" };
+  const found = findVerdictLine(comments.filter(speaksForRepo));
+  let verdict: VerdictFact = {
+    kind: "none",
+    ignored: comments
+      .filter((comment) => !speaksForRepo(comment) && hasVerdictLine(comment))
+      .map(({ author, association, url }) => ({ author, association, url })),
+  };
   if (found !== null) {
     const parsed = parseVerdictLine(found.line);
     verdict =

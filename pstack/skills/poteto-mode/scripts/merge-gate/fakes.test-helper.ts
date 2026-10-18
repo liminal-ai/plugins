@@ -2,8 +2,15 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Check, Repository } from "../watch-pr/types.ts";
-import type { IssueComment, OpenThread, PrRef, PullRequest } from "./gate.ts";
+import type { Repository } from "../watch-pr/types.ts";
+import type {
+  AuthorAssociation,
+  HeadCheck,
+  IssueComment,
+  OpenThread,
+  PrRef,
+  PullRequest,
+} from "./gate.ts";
 import type { GitHub, MergeAttempt, MergeReadBack } from "./github.ts";
 import type { Runtime } from "./cli.ts";
 
@@ -133,8 +140,12 @@ export function makeRepos(): Repos {
   };
 }
 
-export function passing(name = "ci"): Check {
+export function passing(
+  name = "ci",
+  app: string | null = "github-actions"
+): HeadCheck {
   return {
+    app,
     kind: "passed",
     name,
     reportedState: "SUCCESS",
@@ -143,8 +154,12 @@ export function passing(name = "ci"): Check {
     workflow: "",
   };
 }
-export function failing(name = "ci"): Check {
+export function failing(
+  name = "ci",
+  app: string | null = "github-actions"
+): HeadCheck {
   return {
+    app,
     kind: "failed",
     name,
     reportedState: "FAILURE",
@@ -153,8 +168,12 @@ export function failing(name = "ci"): Check {
     workflow: "",
   };
 }
-export function running(name = "ci"): Check {
+export function running(
+  name = "ci",
+  app: string | null = "github-actions"
+): HeadCheck {
   return {
+    app,
     kind: "pending",
     name,
     reportedState: "PENDING",
@@ -168,13 +187,15 @@ let commentTime = 0;
 export function comment(
   body: string,
   author = "leegmoore",
-  isBot = false
+  isBot = false,
+  association: AuthorAssociation = isBot ? "NONE" : "MEMBER"
 ): IssueComment {
   const at = new Date(Date.UTC(2026, 0, 1, 0, 0, commentTime++)).toISOString();
   return {
     id: commentTime,
     author,
     isBot,
+    association,
     body,
     createdAt: at,
     updatedAt: at,
@@ -201,9 +222,14 @@ export interface FakeOptions {
   readonly defaultBranch?: string;
   readonly mergeQueue?: boolean;
   readonly pull: Partial<PullRequest> & { readonly headRefOid: string };
-  /** What a second pull request read returns, as when the PR changes between evaluation and merge. */
-  readonly pullAtMerge?: Partial<PullRequest>;
-  readonly checks?: readonly Check[];
+  /** What every read after the first returns, as when the PR changes between evaluation and merge. */
+  readonly atMerge?: {
+    readonly pull?: Partial<PullRequest>;
+    readonly checks?: readonly HeadCheck[];
+    readonly threads?: readonly OpenThread[];
+    readonly comments?: readonly IssueComment[];
+  };
+  readonly checks?: readonly HeadCheck[];
   readonly threads?: readonly OpenThread[];
   readonly comments?: readonly IssueComment[];
   readonly merge?: MergeAttempt;
@@ -215,11 +241,12 @@ export function fakeGitHub(
   options: FakeOptions
 ): GitHub & { readonly calls: string[] } {
   const calls: string[] = [];
-  let pullReads = 0;
   const step = (name: keyof GitHub, repo: Repository, detail = ""): void => {
     calls.push(`${name} ${repo.owner}/${repo.repo}${detail}`);
     if (options.failOn === name) throw new Error(`${name} failed`);
   };
+  const later = (name: keyof GitHub): boolean =>
+    calls.filter((call) => call.startsWith(`${name} `)).length > 1;
   return {
     calls,
     async defaultBranch(repo) {
@@ -237,21 +264,34 @@ export function fakeGitHub(
         isDraft: false,
         mergeable: "MERGEABLE",
         baseRefName: "main",
+        reviewDecision: null,
+        autoMergeArmed: false,
         ...options.pull,
-        ...(pullReads++ > 0 ? options.pullAtMerge : {}),
+        ...(later("pullRequest") ? options.atMerge?.pull : {}),
       };
     },
     async checks(repo, head) {
       step("checks", repo, ` ${head}`);
-      return options.checks ?? [passing()];
+      return (
+        (later("checks") ? options.atMerge?.checks : undefined) ??
+        options.checks ?? [passing()]
+      );
     },
     async openThreads(pr) {
       step("openThreads", pr, `#${pr.number}`);
-      return options.threads ?? [];
+      return (
+        (later("openThreads") ? options.atMerge?.threads : undefined) ??
+        options.threads ??
+        []
+      );
     },
     async issueComments(pr) {
       step("issueComments", pr, `#${pr.number}`);
-      return options.comments ?? [];
+      return (
+        (later("issueComments") ? options.atMerge?.comments : undefined) ??
+        options.comments ??
+        []
+      );
     },
     async merge(pr, head) {
       step("merge", pr, `#${pr.number} ${head}`);

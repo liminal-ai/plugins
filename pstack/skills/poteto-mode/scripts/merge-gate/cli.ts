@@ -8,7 +8,6 @@ import { parsePrNumber } from "../watch-pr/types.ts";
 import {
   type Facts,
   type PrRef,
-  type PullRequest,
   evaluate,
   missingNames,
   renderEvaluations,
@@ -178,26 +177,27 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     run: { ...run, outcome: "refused", missing: [`merge: ${why}`] },
   });
 
-  // gh pr merge can pin the head but not the base, so a retarget after this read still merges.
-  let current: PullRequest;
+  // gh pr merge pins only the head, so every other requirement is read and judged again right before the merge.
+  let fresh: Facts;
   try {
-    current = await runtime.github.pullRequest(pr);
+    fresh = await readFacts(runtime.github, git, pr);
   } catch (error) {
     return readFailed(error, run);
   }
-  const moved: string[] = [];
-  if (current.headRefOid !== head)
-    moved.push(
-      `the head moved from ${short(head)} to ${short(current.headRefOid)}`
-    );
-  if (current.baseRefName !== facts.pull.baseRefName)
-    moved.push(
-      `the base changed from ${facts.pull.baseRefName} to ${current.baseRefName}`
-    );
-  if (moved.length > 0)
+  if (fresh.pull.headRefOid !== head)
     return notMerged(
-      `Since the gate checked the PR, ${moved.join(" and ")}. Nothing was merged. Run the gate again.`
+      `Since the gate checked the PR, the head moved from ${short(head)} to ${short(fresh.pull.headRefOid)}. Nothing was merged. Run the gate again.`
     );
+  const lapsed = evaluate(fresh).filter((entry) => !entry.result.met);
+  if (lapsed.length > 0)
+    return {
+      exit: EXIT.refused,
+      text: renderEvaluations(
+        `NOT MERGED: ${at}\nSince the gate checked the PR, ${lapsed.length === 1 ? "a requirement" : "requirements"} stopped holding. Nothing was merged.`,
+        lapsed
+      ),
+      run: { ...run, outcome: "refused", missing: missingNames(lapsed) },
+    };
 
   const attempt = await runtime.github
     .merge(pr, head)

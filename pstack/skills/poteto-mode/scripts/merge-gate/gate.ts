@@ -1,4 +1,9 @@
-import type { Check, PrNumber, Repository } from "../watch-pr/types.ts";
+import type {
+  Check,
+  PrNumber,
+  Repository,
+  ReviewDecision,
+} from "../watch-pr/types.ts";
 
 export interface PrRef extends Repository {
   readonly number: PrNumber;
@@ -10,7 +15,12 @@ export interface PullRequest {
   readonly mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   readonly baseRefName: string;
   readonly headRefOid: string;
+  readonly reviewDecision: ReviewDecision;
+  readonly autoMergeArmed: boolean;
 }
+
+/** `app` is the slug of the GitHub App whose check suite reported a check run; null for a commit status or an app GitHub does not name. */
+export type HeadCheck = Check & { readonly app: string | null };
 
 export interface OpenThread {
   readonly author: string | null;
@@ -20,11 +30,24 @@ export interface OpenThread {
   readonly url: string | null;
 }
 
+export const AUTHOR_ASSOCIATIONS = [
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+  "CONTRIBUTOR",
+  "FIRST_TIME_CONTRIBUTOR",
+  "FIRST_TIMER",
+  "MANNEQUIN",
+  "NONE",
+] as const;
+export type AuthorAssociation = (typeof AUTHOR_ASSOCIATIONS)[number];
+
 export interface IssueComment {
   /** GitHub's REST id. It grows with creation order, so it orders comments posted in the same second. */
   readonly id: number;
   readonly author: string;
   readonly isBot: boolean;
+  readonly association: AuthorAssociation;
   readonly body: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -37,8 +60,14 @@ export type HashResult =
 
 export type VerdictOutcome = "PASS" | "PASS+NOTES" | "FAIL";
 
+export interface IgnoredVerdict {
+  readonly author: string;
+  readonly association: AuthorAssociation;
+  readonly url: string;
+}
+
 export type VerdictFact =
-  | { readonly kind: "none" }
+  | { readonly kind: "none"; readonly ignored: readonly IgnoredVerdict[] }
   | { readonly kind: "malformed"; readonly line: string; readonly url: string }
   | {
       readonly kind: "found";
@@ -61,7 +90,7 @@ export interface Facts {
   readonly defaultBranch: string;
   readonly baseUsesMergeQueue: boolean;
   readonly pull: PullRequest;
-  readonly checks: readonly Check[];
+  readonly checks: readonly HeadCheck[];
   readonly threads: readonly OpenThread[];
   readonly comments: readonly IssueComment[];
   readonly mergeBase: string;
@@ -116,6 +145,21 @@ const firstLine = (body: string): string =>
     .map(readable)
     .find((line) => line !== "")
     ?.slice(0, 120) ?? "(empty comment)";
+
+/** Anyone can comment on a public repo, so a pasted verdict or approval line counts only from someone with a role in it. */
+const SPEAKS_FOR_REPO: ReadonlySet<AuthorAssociation> = new Set([
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+]);
+export const speaksForRepo = (comment: IssueComment): boolean =>
+  SPEAKS_FOR_REPO.has(comment.association);
+
+export const hasVerdictLine = (comment: IssueComment): boolean =>
+  lines(comment.body).some((line) => line.startsWith(VERDICT_PREFIX));
+
+const isBugbot = (check: HeadCheck): boolean =>
+  check.app === "cursor" && check.name.includes("Bugbot");
 
 /** Creation order, not edit time, so editing an old comment never makes it the newest. */
 const newestFirst = (a: IssueComment, b: IssueComment): number => b.id - a.id;
@@ -191,10 +235,21 @@ const openAndMergeable: Requirement = {
   },
 };
 
+const autoMerge: Requirement = {
+  name: "Auto-merge",
+  evaluate({ pr, pull }) {
+    if (!pull.autoMergeArmed) return met("not armed");
+    return unmet(
+      "Auto-merge is armed on the PR, so GitHub could land it later without the gate. Disarm it, then run the gate again:",
+      [`gh pr merge ${pr.number} --repo ${pr.owner}/${pr.repo} --disable-auto`]
+    );
+  },
+};
+
 const checks: Requirement = {
   name: "Checks",
   evaluate({ checks: all }) {
-    const counted = all.filter((check) => !/bugbot/i.test(check.name));
+    const counted = all.filter((check) => !isBugbot(check));
     const ignored = all.length - counted.length;
     const bugbot = ignored === 0 ? "" : `, ${ignored} Bugbot ignored`;
     if (counted.length === 0) return met(`no checks reported${bugbot}`);
@@ -236,13 +291,34 @@ const reviewThreads: Requirement = {
   },
 };
 
+const reviewDecision: Requirement = {
+  name: "Review decision",
+  evaluate({ pull }) {
+    if (pull.reviewDecision === "CHANGES_REQUESTED")
+      return unmet(
+        "A reviewer requested changes. Address them and have the reviewer approve or dismiss their review."
+      );
+    return met(
+      pull.reviewDecision === null
+        ? "no review decision"
+        : pull.reviewDecision.toLowerCase().replace("_", " ")
+    );
+  },
+};
+
 const verdict: Requirement = {
   name: "Independent verdict",
   evaluate({ verdict: fact, currentHash, mergeBase, pull }) {
     const postLine = `pstack-verdict: <PASS|PASS+NOTES|FAIL> head=${pull.headRefOid} base=${mergeBase} by=<model>`;
     if (fact.kind === "none")
       return unmet(
-        `No verdict on the PR. Have a verifier from the other model family review it and post the line "${postLine}".`
+        `No verdict on the PR. Have a verifier from the other model family review it and post the line "${postLine}".${fact.ignored.length === 0 ? "" : " The gate ignored the verdict lines below because their authors are not owners, members or collaborators of the repo."}`,
+        fact.ignored.length === 0
+          ? undefined
+          : fact.ignored.map(
+              (line) =>
+                `ignored: ${line.author} (${line.association}) ${line.url}`
+            )
       );
     if (fact.kind === "malformed")
       return unmet(
@@ -311,7 +387,10 @@ const instructionApproval: Requirement = {
       return met("no AGENTS.md or CLAUDE.md changes");
     const line = `${APPROVAL_PREFIX} ${instructionFiles.approvalHash}`;
     const approved = comments.some(
-      (comment) => !comment.isBot && lines(comment.body).includes(line)
+      (comment) =>
+        !comment.isBot &&
+        speaksForRepo(comment) &&
+        lines(comment.body).includes(line)
     );
     if (approved)
       return met(
@@ -326,8 +405,10 @@ const instructionApproval: Requirement = {
 
 export const REQUIREMENTS: readonly Requirement[] = [
   openAndMergeable,
+  autoMerge,
   checks,
   reviewThreads,
+  reviewDecision,
   verdict,
   codexReview,
   instructionApproval,

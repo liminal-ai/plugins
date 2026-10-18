@@ -53,6 +53,7 @@ beforeAll(() => {
     state: "OPEN",
     mergedAt: null,
     isDraft: false,
+    autoMergeRequest: null,
   });
   const user = (login: string, type: string) => ({ login, type });
   json("comments.json", [
@@ -64,6 +65,7 @@ beforeAll(() => {
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
         html_url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+        author_association: "MEMBER",
       },
     ],
     [
@@ -74,6 +76,7 @@ beforeAll(() => {
         created_at: "2026-01-01T00:00:01Z",
         updated_at: "2026-01-01T00:00:01Z",
         html_url: "https://github.com/owner/repo/pull/1#issuecomment-2",
+        author_association: "NONE",
       },
     ],
   ]);
@@ -91,6 +94,7 @@ beforeAll(() => {
                   status: "COMPLETED",
                   conclusion: "SUCCESS",
                   detailsUrl: "",
+                  checkSuite: { app: { slug: "github-actions" } },
                 },
                 {
                   __typename: "CheckRun",
@@ -98,6 +102,7 @@ beforeAll(() => {
                   status: "QUEUED",
                   conclusion: null,
                   detailsUrl: "",
+                  checkSuite: { app: { slug: "cursor" } },
                 },
                 {
                   __typename: "StatusContext",
@@ -164,7 +169,7 @@ it("reads and merges through gh, naming the repo on every call", async () => {
         .split("\0")
         .slice(0, -1)
     );
-  expect(calls.length).toBe(9);
+  expect(calls.length).toBe(14);
   for (const argv of calls) {
     const names = argv.includes("--repo")
       ? argv[argv.indexOf("--repo") + 1] === "owner/repo"
@@ -208,6 +213,29 @@ const threadsPage = (pageInfo: unknown) => ({
     repository: { pullRequest: { reviewThreads: { pageInfo, nodes: [] } } },
   },
 });
+const commentPage = (fields: Record<string, unknown>) => [
+  [
+    {
+      id: 9,
+      user: { login: "someone", type: "User" },
+      body: "hello",
+      created_at: "2026-01-01T00:00:09Z",
+      updated_at: "2026-01-01T00:00:09Z",
+      html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+      ...fields,
+    },
+  ],
+];
+const onlyCheck = (node: unknown) =>
+  checksPage({
+    statusCheckRollup: {
+      contexts: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [node],
+      },
+    },
+  });
+const pull = () => JSON.parse(readFileSync(join(dir, "pr.json"), "utf8"));
 const contexts = (pageInfo: unknown) => ({
   statusCheckRollup: { contexts: { pageInfo, nodes: [] } },
 });
@@ -263,6 +291,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
@@ -279,6 +308,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
@@ -295,6 +325,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
@@ -311,6 +342,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
@@ -327,6 +359,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
         {
           id: 9,
@@ -335,6 +368,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
@@ -351,6 +385,7 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
@@ -366,9 +401,39 @@ for (const [label, name, value] of [
           created_at: "2026-01-01T00:00:09Z",
           updated_at: "2026-01-01T00:00:09Z",
           html_url: "https://github.com/owner/repo/pull/1#issuecomment-9",
+          author_association: "NONE",
         },
       ],
     ],
+  ],
+  ["a comment with no author_association", "comments.json", commentPage({})],
+  [
+    "a comment with an unknown author_association",
+    "comments.json",
+    commentPage({ author_association: "ADMIN" }),
+  ],
+  [
+    "a check run with no checkSuite",
+    "checks.json",
+    onlyCheck({
+      __typename: "CheckRun",
+      name: "Cursor Bugbot",
+      status: "COMPLETED",
+      conclusion: "FAILURE",
+      detailsUrl: "",
+    }),
+  ],
+  [
+    "a check run whose app has no slug",
+    "checks.json",
+    onlyCheck({
+      __typename: "CheckRun",
+      name: "Cursor Bugbot",
+      status: "COMPLETED",
+      conclusion: "FAILURE",
+      detailsUrl: "",
+      checkSuite: { app: {} },
+    }),
   ],
 ] as const) {
   it(`treats ${label} as a read error and merges nothing`, async () => {
@@ -390,6 +455,7 @@ it("reads a comment from an Enterprise managed user whose login has an underscor
         created_at: "2026-01-01T00:00:02Z",
         updated_at: "2026-01-01T00:00:02Z",
         html_url: "https://github.com/owner/repo/pull/1#issuecomment-3",
+        author_association: "CONTRIBUTOR",
       },
     ],
   ]);
@@ -403,4 +469,41 @@ it("reads an explicit null statusCheckRollup as no checks", async () => {
   );
   expect(result.exit).toBe(0);
   expect(result.out).toContain("met: Checks (no checks reported)");
+});
+
+it("treats a PR read with no autoMergeRequest as a read error and merges nothing", async () => {
+  const { autoMergeRequest: _, ...rest } = pull();
+  const result = await checkWith("pr.json", rest);
+  expect(result.exit).toBe(2);
+  expect(result.out).toStartWith("ERROR: owner/repo#1\n");
+});
+
+it("refuses a PR with auto-merge armed and leaves it armed", async () => {
+  const result = await checkWith("pr.json", {
+    ...pull(),
+    autoMergeRequest: {
+      enabledAt: "2026-01-01T00:00:00Z",
+      mergeMethod: "SQUASH",
+    },
+  });
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain(
+    "gh pr merge 1 --repo owner/repo --disable-auto"
+  );
+});
+
+it("counts a failed check run from an app with no slug in its suite", async () => {
+  const result = await checkWith(
+    "checks.json",
+    onlyCheck({
+      __typename: "CheckRun",
+      name: "Cursor Bugbot",
+      status: "COMPLETED",
+      conclusion: "FAILURE",
+      detailsUrl: "",
+      checkSuite: { app: null },
+    })
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 failed (Cursor Bugbot)");
 });
