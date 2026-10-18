@@ -21,6 +21,8 @@ export interface OpenThread {
 }
 
 export interface IssueComment {
+  /** GitHub's REST id. It grows with creation order, so it orders comments posted in the same second. */
+  readonly id: number;
   readonly author: string;
   readonly isBot: boolean;
   readonly body: string;
@@ -100,21 +102,28 @@ export const short = (sha: string): string => sha.slice(0, 7);
 const lines = (body: string): string[] =>
   body.split(/\r?\n/).map((line) => line.trim());
 
+const readable = (line: string): string =>
+  line
+    .replace(/\[?!\[[^\]]*\]\([^)]*\)(\]\([^)]*\))?/g, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const firstLine = (body: string): string =>
   lines(body)
+    .map(readable)
     .find((line) => line !== "")
     ?.slice(0, 120) ?? "(empty comment)";
 
-const newestFirst =
-  (key: "createdAt" | "updatedAt") =>
-  (a: IssueComment, b: IssueComment): number =>
-    b[key].localeCompare(a[key]);
+/** Creation order, not edit time, so editing an old comment never makes it the newest. */
+const newestFirst = (a: IssueComment, b: IssueComment): number => b.id - a.id;
 
-/** The most recent comment (by creation time) with a verdict line decides; its last such line counts. */
+/** The most recent comment with a verdict line decides; its last such line counts. */
 export function findVerdictLine(
   comments: readonly IssueComment[]
 ): { readonly line: string; readonly url: string } | null {
-  for (const comment of [...comments].sort(newestFirst("createdAt"))) {
+  for (const comment of [...comments].sort(newestFirst)) {
     const found = lines(comment.body).filter((line) =>
       line.startsWith(VERDICT_PREFIX)
     );
@@ -258,7 +267,7 @@ const codexReview: Requirement = {
   evaluate({ comments, pull }) {
     const ask =
       'Comment "@codex review" on the PR and wait for Codex\'s summary comment to name this head.';
-    for (const comment of [...comments].sort(newestFirst("updatedAt"))) {
+    for (const comment of [...comments].sort(newestFirst)) {
       if (!CODEX_LOGINS.has(comment.author)) continue;
       const match = CODEX_STATE.exec(comment.body);
       if (match === null) continue;

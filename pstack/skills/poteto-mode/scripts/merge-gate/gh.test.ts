@@ -56,6 +56,7 @@ beforeAll(() => {
   json("comments.json", [
     [
       {
+        id: 1,
         user: user("leegmoore", "User"),
         body: `pstack-verdict: PASS head=${repos.head} base=${repos.main} by=codex/gpt-6.1-sol`,
         created_at: "2026-01-01T00:00:00Z",
@@ -65,6 +66,7 @@ beforeAll(() => {
     ],
     [
       {
+        id: 2,
         user: user("chatgpt-codex-connector[bot]", "Bot"),
         body: `<!-- codex-review-state:v1 {"code_review":{"commit_sha":"${repos.head}","status":"completed"}} -->`,
         created_at: "2026-01-01T00:00:01Z",
@@ -160,7 +162,7 @@ it("reads and merges through gh, naming the repo on every call", async () => {
         .split("\0")
         .slice(0, -1)
     );
-  expect(calls.length).toBe(7);
+  expect(calls.length).toBe(8);
   for (const argv of calls) {
     const names = argv.includes("--repo")
       ? argv[argv.indexOf("--repo") + 1] === "owner/repo"
@@ -181,4 +183,73 @@ it("reads and merges through gh, naming the repo on every call", async () => {
     "--match-head-commit",
     repos.head,
   ]);
+});
+
+async function checkWith(name: string, value: unknown) {
+  const path = join(dir, name);
+  const saved = readFileSync(path, "utf8");
+  writeFileSync(path, JSON.stringify(value));
+  try {
+    const runtime = runtimeFor(new GhGitHub(), repos.gate);
+    const exit = await main(["--repo", "owner/repo", "--pr", "1"], runtime);
+    return { exit, out: runtime.out() };
+  } finally {
+    writeFileSync(path, saved);
+  }
+}
+
+const checksPage = (commit: unknown) => ({
+  data: { repository: { object: commit } },
+});
+const threadsPage = (pageInfo: unknown) => ({
+  data: {
+    repository: { pullRequest: { reviewThreads: { pageInfo, nodes: [] } } },
+  },
+});
+const contexts = (pageInfo: unknown) => ({
+  statusCheckRollup: { contexts: { pageInfo, nodes: [] } },
+});
+
+for (const [label, name, value] of [
+  ["a commit missing statusCheckRollup", "checks.json", checksPage({})],
+  [
+    "checks with another page but no cursor",
+    "checks.json",
+    checksPage(contexts({ hasNextPage: true, endCursor: null })),
+  ],
+  [
+    "checks whose page omits hasNextPage",
+    "checks.json",
+    checksPage(contexts({ endCursor: null })),
+  ],
+  [
+    "threads whose page omits hasNextPage",
+    "threads.json",
+    threadsPage({ endCursor: null }),
+  ],
+  [
+    "threads with a non-boolean hasNextPage",
+    "threads.json",
+    threadsPage({ hasNextPage: "false", endCursor: null }),
+  ],
+  [
+    "threads with another page but no cursor",
+    "threads.json",
+    threadsPage({ hasNextPage: true, endCursor: null }),
+  ],
+] as const) {
+  it(`treats ${label} as a read error and merges nothing`, async () => {
+    const result = await checkWith(name, value);
+    expect(result.exit).toBe(2);
+    expect(result.out).toStartWith("ERROR: owner/repo#1\n");
+  });
+}
+
+it("reads an explicit null statusCheckRollup as no checks", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksPage({ statusCheckRollup: null })
+  );
+  expect(result.exit).toBe(0);
+  expect(result.out).toContain("met: Checks (no checks reported)");
 });

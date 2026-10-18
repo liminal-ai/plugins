@@ -148,7 +148,24 @@ describe("merge-gate", () => {
       expect(result.exit).toBe(1);
       expect(result.out).toContain("missing: Review threads. 1 unresolved.");
       expect(result.out).toContain(
-        "  chatgpt-codex-connector at src/a.ts:12: **P1** Handle the empty case https://github.com/owner/repo/pull/1#discussion_r9"
+        "  chatgpt-codex-connector at src/a.ts:12: P1 Handle the empty case https://github.com/owner/repo/pull/1#discussion_r9"
+      );
+    });
+
+    it("previews the readable title, not badge images or HTML around it", async () => {
+      const result = await gate({
+        threads: [
+          {
+            author: "chatgpt-codex-connector",
+            path: "a.md",
+            line: 19,
+            body: "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Gate READY on the Codex state marker before accepting the watcher's word**\n\nAfter a push...",
+            url: "https://github.com/owner/repo/pull/1#discussion_r10",
+          },
+        ],
+      });
+      expect(result.out).toContain(
+        "  chatgpt-codex-connector at a.md:19: Gate READY on the Codex state marker before accepting the watcher's word https://github.com/owner/repo/pull/1#discussion_r10"
       );
     });
 
@@ -193,6 +210,20 @@ describe("merge-gate", () => {
       });
       expect(result.exit).toBe(1);
       expect(verdictLine(result.out)).toContain("FAIL");
+    });
+
+    it("breaks a same-second tie toward the later comment: FAIL after PASS refuses", async () => {
+      const pass = verdictComment("PASS", repos.head, repos.main);
+      const fail = {
+        ...verdictComment("FAIL", repos.head, repos.main),
+        createdAt: pass.createdAt,
+        updatedAt: pass.updatedAt,
+      };
+      const result = await gate({
+        comments: [pass, fail, codexComment(repos.head)],
+      });
+      expect(result.exit).toBe(1);
+      expect(verdictLine(result.out)).toContain("The latest verdict is FAIL");
     });
 
     it("uses the most recent verdict: a newer PASS+NOTES beats an older FAIL", async () => {
@@ -290,6 +321,38 @@ describe("merge-gate", () => {
         comments: [
           verdictComment("PASS", repos.head, repos.main),
           codexComment(repos.head, "in_progress"),
+        ],
+      });
+      expect(result.exit).toBe(1);
+      expect(result.missing[0]).toContain("is in_progress, not completed");
+    });
+
+    it("an edit to an older completed summary does not hide a newer pending review", async () => {
+      const done = codexComment(repos.head);
+      const pending = codexComment(repos.head, "in_progress");
+      const result = await gate({
+        comments: [
+          verdictComment("PASS", repos.head, repos.main),
+          { ...done, updatedAt: "2026-06-01T00:00:00.000Z" },
+          pending,
+        ],
+      });
+      expect(result.exit).toBe(1);
+      expect(result.missing[0]).toContain("is in_progress, not completed");
+    });
+
+    it("breaks a same-second tie toward the later Codex comment", async () => {
+      const done = codexComment(repos.head);
+      const pending = {
+        ...codexComment(repos.head, "in_progress"),
+        createdAt: done.createdAt,
+        updatedAt: done.updatedAt,
+      };
+      const result = await gate({
+        comments: [
+          verdictComment("PASS", repos.head, repos.main),
+          done,
+          pending,
         ],
       });
       expect(result.exit).toBe(1);
@@ -415,10 +478,36 @@ describe("merge-gate", () => {
       expect(result.out).toContain("GitHub reads the PR as OPEN against main");
     });
 
-    it("refuses when it merged into another base", async () => {
+    it("says plainly when the merge landed in another base", async () => {
       const result = await gate({ readBack: { baseRefName: "parent" } }, []);
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("not merged into main");
+      expect(result.out).toStartWith(
+        `MERGED INTO THE WRONG BASE: owner/repo#1 at ${repos.head.slice(0, 7)} into parent, not main\n`
+      );
+      expect(result.out).not.toContain("NOT MERGED");
+      expect(result.out).toContain("Tell Lee");
+      expect(result.log()).toContain("\tmerge\twrong-base\t");
+    });
+
+    it("merges nothing when the PR was retargeted after evaluation", async () => {
+      const result = await gate({ pullAtMerge: { baseRefName: "parent" } }, []);
+      expect(result.exit).toBe(1);
+      expect(merged(result.calls)).toBe(false);
+      expect(result.out).toStartWith(
+        `NOT MERGED: owner/repo#1 at ${repos.head.slice(0, 7)}\n`
+      );
+      expect(result.out).toContain("main to parent");
+      expect(result.log()).toContain("\tmerge\trefused\t");
+    });
+
+    it("merges nothing when the head moved after evaluation", async () => {
+      const result = await gate(
+        { pullAtMerge: { headRefOid: repos.changedHead } },
+        []
+      );
+      expect(result.exit).toBe(1);
+      expect(merged(result.calls)).toBe(false);
+      expect(result.out).toContain(repos.changedHead.slice(0, 7));
     });
 
     it("refuses when the merge command fails, as when the head moved", async () => {
@@ -459,6 +548,45 @@ describe("merge-gate", () => {
     const runtime = runtimeFor(github, repos.gate);
     expect(await main(["--pr", "1", "--check"], runtime)).toBe(0);
     expect(github.calls[0]).toStartWith("defaultBranch owner/repo");
+  });
+
+  it("logs a usage error with whatever context it has", async () => {
+    const runtime = runtimeFor(
+      fakeGitHub({ pull: { headRefOid: "x" } }),
+      repos.gate
+    );
+    expect(
+      await main(
+        ["--repo", "owner/repo", "--pr", "15", "--check", "--badflag"],
+        runtime
+      )
+    ).toBe(2);
+    expect(await main(["--pr", "abc"], runtime)).toBe(2);
+    const rows = readFileSync(
+      join(runtime.store, "merge-gate", "runs.tsv"),
+      "utf8"
+    )
+      .split("\n")
+      .slice(1, -1)
+      .map((row) => row.split("\t").slice(1));
+    expect(rows).toEqual([
+      [
+        "owner/repo",
+        "15",
+        "",
+        "check",
+        "error",
+        "usage: unknown option '--badflag'",
+      ],
+      [
+        "",
+        "abc",
+        "",
+        "merge",
+        "error",
+        expect.stringMatching(/^usage: .*--pr/),
+      ],
+    ]);
   });
 
   it("exits 2 on bad usage", async () => {

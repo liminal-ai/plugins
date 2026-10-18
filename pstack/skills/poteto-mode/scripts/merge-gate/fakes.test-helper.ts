@@ -172,6 +172,7 @@ export function comment(
 ): IssueComment {
   const at = new Date(Date.UTC(2026, 0, 1, 0, 0, commentTime++)).toISOString();
   return {
+    id: commentTime,
     author,
     isBot,
     body,
@@ -199,6 +200,8 @@ export const codexComment = (sha: string, status = "completed"): IssueComment =>
 export interface FakeOptions {
   readonly defaultBranch?: string;
   readonly pull: Partial<PullRequest> & { readonly headRefOid: string };
+  /** What a second pull request read returns, as when the PR changes between evaluation and merge. */
+  readonly pullAtMerge?: Partial<PullRequest>;
   readonly checks?: readonly Check[];
   readonly threads?: readonly OpenThread[];
   readonly comments?: readonly IssueComment[];
@@ -211,6 +214,7 @@ export function fakeGitHub(
   options: FakeOptions
 ): GitHub & { readonly calls: string[] } {
   const calls: string[] = [];
+  let pullReads = 0;
   const step = (name: keyof GitHub, repo: Repository, detail = ""): void => {
     calls.push(`${name} ${repo.owner}/${repo.repo}${detail}`);
     if (options.failOn === name) throw new Error(`${name} failed`);
@@ -229,6 +233,7 @@ export function fakeGitHub(
         mergeable: "MERGEABLE",
         baseRefName: "main",
         ...options.pull,
+        ...(pullReads++ > 0 ? options.pullAtMerge : {}),
       };
     },
     async checks(repo, head) {

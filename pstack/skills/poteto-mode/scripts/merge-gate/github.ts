@@ -97,11 +97,15 @@ function graphql(
   return runJson(argv);
 }
 
+/** A page that cannot say whether more follow, or how to get them, is an incomplete read, never the last page. */
 function nextCursor(pageInfo: unknown, path: string): string | null {
   const page = record(pageInfo, path);
-  return page.hasNextPage === true
-    ? optionalString(page.endCursor, `${path}.endCursor`)
-    : null;
+  if (typeof page.hasNextPage !== "boolean")
+    readError(`${path}.hasNextPage is not a boolean`);
+  if (!page.hasNextPage) return null;
+  if (typeof page.endCursor !== "string" || page.endCursor === "")
+    readError(`${path} says another page follows but gives no endCursor`);
+  return page.endCursor;
 }
 
 function readError(detail: string): never {
@@ -149,8 +153,11 @@ export class GhGitHub implements GitHub {
       });
       const commit = at(value, ["data", "repository", "object"]);
       if (commit === null) readError(`GitHub does not know commit ${head}`);
-      const rollup = record(commit, "commit").statusCheckRollup;
-      if (rollup === null || rollup === undefined) return checks;
+      const fields = record(commit, "commit");
+      if (!("statusCheckRollup" in fields))
+        readError(`commit ${head} came back without statusCheckRollup`);
+      const rollup = fields.statusCheckRollup;
+      if (rollup === null) return checks;
       const contexts = record(
         at(rollup, ["contexts"]),
         "statusCheckRollup.contexts"
@@ -222,7 +229,10 @@ export class GhGitHub implements GitHub {
       list(page, "comment page").map((item) => {
         const comment = record(item, "comment");
         const user = record(comment.user, "comment.user");
+        if (!Number.isSafeInteger(comment.id))
+          readError("comment.id is not an integer");
         return {
+          id: comment.id as number,
           author: string(user.login, "comment.user.login"),
           isBot: user.type === "Bot",
           body: string(comment.body ?? "", "comment.body"),
