@@ -434,6 +434,48 @@ test("an input that contains the rounds folder is refused", (t) => {
   assert.ok(!existsSync(join(store, "retro", "rounds")) || readdirSync(join(store, "retro", "rounds")).length === 0);
 });
 
+test("a trail named twice in one command is copied once", (t) => {
+  const { run, record } = sandbox(t);
+  const file = join(scratchDir(t), "log.tsv");
+  writeFileSync(file, "v1\n");
+  run(["register", A, "--trail", file, "--trail", file]);
+  assert.equal(record(A).trails.length, 1);
+});
+
+test("an input that contains the rounds folder through a symlinked store is refused", (t) => {
+  const { store, env } = sandbox(t);
+  const alias = join(scratchDir(t), "store-alias");
+  symlinkSync(store, alias);
+  const viaAlias = (args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf-8", env: { ...env(), PSTACK_STORE: alias } });
+  viaAlias(["register", A]);
+  assert.match(viaAlias(["open", "--threads", A, "--input", store]).stderr, /contains the rounds folder/);
+});
+
+test("close takes only a round id, never a path", (t) => {
+  const { store, run } = sandbox(t);
+  mkdirSync(join(store, "elsewhere"), { recursive: true });
+  writeFileSync(join(store, "elsewhere", "round.json"), JSON.stringify({ round: "x", openedAt: "2026-01-01T00:00:00Z", closedAt: null, threads: [], reflects: [], inputs: [], earlier: "e" }));
+  writeFileSync(join(store, "elsewhere", "synthesis.md"), "s\n");
+  assert.match(run(["close", "../../elsewhere"]).err, /no round/);
+  assert.equal(JSON.parse(readFileSync(join(store, "elsewhere", "round.json"), "utf-8")).closedAt, null);
+});
+
+test("a trail that contains the store is refused", (t) => {
+  const outer = scratchDir(t);
+  const store = join(outer, "store");
+  mkdirSync(store);
+  const r = spawnSync(process.execPath, [script, "register", A, "--trail", outer], { encoding: "utf-8", env: { ...process.env, PSTACK_STORE: store } });
+  assert.match(r.stderr, /contains the pstack store/);
+});
+
+test("an earlier round's README asks only for its synthesis", (t) => {
+  const { store, run } = sandbox(t);
+  run(["open", "--threads", "", "--at", "2026-10-16", "--earlier", "old"]);
+  const readme = readFileSync(join(store, "retro", "rounds", "2026-10-16", "README.md"), "utf-8");
+  assert.match(readme, /synthesis\.md/);
+  assert.doesNotMatch(readme, /merge-gate\.md/);
+});
+
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);

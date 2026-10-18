@@ -228,6 +228,7 @@ function planTrail(rec, path) {
   const target = real(source);
   const { mode, commit } = trailMode(target);
   if (mode === "linked") return { kind: "link", source, target, commit };
+  if (within(real(STORE), target)) refuse(`trail ${source} contains the pstack store; name something inside it instead`);
   let sum;
   try {
     sum = digest(source);
@@ -294,7 +295,7 @@ function cmdRegister(args) {
   const dir = args.reflected && resolve(args.reflected);
   if (dir && !within(dir, home)) refuse(`--reflected takes a folder inside ${home}, got ${dir}`);
   if (dir && !isFile(join(dir, "synthesis.md"))) refuse(`write the reflect outputs first: ${join(dir, "synthesis.md")} is missing`);
-  const plans = args.trail.map((trail) => planTrail(rec, trail));
+  const plans = [...new Set(args.trail.map((trail) => resolve(trail)))].map((trail) => planTrail(rec, trail));
   for (const plan of plans) applyTrail(home, rec, plan, at);
   if (dir && !rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
   writeJson(file, rec);
@@ -407,8 +408,12 @@ function roundReadme(round, state) {
     "## Outputs, needed before close",
     "",
     "- `synthesis.md`: what the round found across these threads.",
-    "- `decisions.md`: the operator's decisions, in the operator's words.",
-    "- `merge-gate.md`: how the merge gate script is doing since the last round, and whether it needs refinement or a different approach.",
+    ...(round.earlier
+      ? []
+      : [
+          "- `decisions.md`: the operator's decisions, in the operator's words.",
+          "- `merge-gate.md`: how the merge gate script is doing since the last round, and whether it needs refinement or a different approach.",
+        ]),
     "",
     `Then run \`${SELF} close ${round.round}\`.`,
     "",
@@ -444,7 +449,8 @@ function cmdOpen(args) {
   }
   if (ids.length === 0 && !args.earlier) refuse("no threads are waiting; pass --threads to choose some");
   for (const p of args.input) if (!existsSync(p)) refuse(`input not found: ${p}`);
-  for (const p of args.input) if (within(ROUNDS, real(p))) refuse(`input ${p} contains the rounds folder; name something inside it instead`);
+  mkdirSync(ROUNDS, { recursive: true });
+  for (const p of args.input) if (within(real(ROUNDS), real(p))) refuse(`input ${p} contains the rounds folder; name something inside it instead`);
   const reflects = ids.flatMap((id) => pendingReflects(state.threads.get(id), state.rounds).map((c) => c.dir));
   const dir = unique(join(ROUNDS, day(at)));
   const inputs = args.input.map((p) => ({ source: resolve(p), copy: null }));
@@ -473,7 +479,7 @@ function cmdOpen(args) {
 function cmdClose(args) {
   const id = args._[0];
   const file = join(ROUNDS, id ?? "", "round.json");
-  if (!id || !existsSync(file)) refuse(`no round ${id ?? "given"}; see ${SELF} status`);
+  if (!/^\d{4}-\d{2}-\d{2}(-\d+)?$/.test(id ?? "") || !existsSync(file)) refuse(`no round ${id ?? "given"}; see ${SELF} status`);
   const problems = [];
   const round = readJson(file, problems);
   if (!round) refuse(problems.join("\n"));
