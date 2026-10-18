@@ -27,7 +27,9 @@ function sandbox(t) {
   const home = (id) => join(store, "retro", id);
   const record = (id) => JSON.parse(readFileSync(join(home(id), "thread.json"), "utf-8"));
   const reflect = (id, nowIso, files = {}) => {
-    const dir = run(["reflect", id], nowIso).out.trim();
+    const allocated = run(["reflect", id], nowIso);
+    assert.equal(allocated.code, 0, allocated.err);
+    const dir = allocated.out.trim();
     writeFileSync(join(dir, "synthesis.md"), "findings\n");
     for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
     assert.equal(run(["register", id, "--reflected", dir], nowIso).code, 0);
