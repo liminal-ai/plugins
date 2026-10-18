@@ -48,7 +48,7 @@ const BACKUP_STATE = join(GIT_DIR, "retro-backup.json");
 const GITLEAKS_REPORT = join(GIT_DIR, "retro-gitleaks.json");
 const PUSH_TIMEOUT_MS = 15000;
 
-// Used when gitleaks is not installed. Each pattern is specific enough not to match ordinary prose.
+// Checked on every commit, with gitleaks too when it is installed. Each pattern is specific enough not to match ordinary prose.
 const SECRET_PATTERNS = [
   ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
@@ -223,10 +223,11 @@ function digest(path) {
   return sha(JSON.stringify(tree(path)));
 }
 
+// A copied .git would reach the backup as a bare gitlink, so copies keep only the files.
 function copyResolved(src, dest) {
   if (statSync(src).isDirectory()) {
     mkdirSync(dest);
-    for (const name of readdirSync(src)) copyResolved(join(src, name), join(dest, name));
+    for (const name of readdirSync(src)) if (name !== ".git") copyResolved(join(src, name), join(dest, name));
   } else {
     copyFileSync(src, dest);
   }
@@ -427,23 +428,25 @@ function backupState() {
 }
 
 // Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
-function scanStaged() {
+function gitleaksHits() {
   const leaks = spawnSync(
     "gitleaks",
     ["git", "--pre-commit", "--staged", "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
     { encoding: "utf-8" },
   );
-  if (leaks.error?.code !== "ENOENT") {
-    if (leaks.status === 0) return [];
-    try {
-      if (leaks.status === 3) return JSON.parse(readFileSync(GITLEAKS_REPORT, "utf-8")).map((f) => ({ file: f.File, pattern: `gitleaks ${f.RuleID}` }));
-    } catch {}
-    return [{ file: ".", pattern: `gitleaks did not finish: ${(leaks.stderr || leaks.error?.message || `exit ${leaks.status}`).trim().split("\n").at(-1)}` }];
-  }
-  const hits = new Map();
+  if (leaks.error?.code === "ENOENT" || leaks.status === 0) return [];
+  try {
+    if (leaks.status === 3) return JSON.parse(readFileSync(GITLEAKS_REPORT, "utf-8")).map((f) => ({ file: f.File, pattern: `gitleaks ${f.RuleID}` }));
+  } catch {}
+  return [{ file: ".", pattern: `gitleaks did not finish: ${(leaks.stderr || leaks.error?.message || `exit ${leaks.status}`).trim().split("\n").at(-1)}` }];
+}
+
+// --text makes git show the added lines of files it would call binary, such as a log with a NUL byte.
+function scanStaged() {
+  const hits = new Map(gitleaksHits().map((x) => [`${x.file}\0${x.pattern}`, x]));
   let file = null;
   let header = false;
-  for (const line of git("-c", "core.quotePath=false", "diff", "--cached", "--no-color", "--no-ext-diff", "-U0").stdout.split("\n")) {
+  for (const line of git("-c", "core.quotePath=false", "diff", "--cached", "--text", "--no-color", "--no-ext-diff", "-U0").stdout.split("\n")) {
     if (line.startsWith("diff --git ")) header = true;
     else if (header && line.startsWith("+++ ")) file = line === "+++ /dev/null" ? null : line.slice(6);
     else if (line.startsWith("@@")) header = false;

@@ -585,3 +585,26 @@ test("a trail inside the retro folder is linked, since the backup already holds 
   run(["register", A, "--trail", join(store, "retro", "notes", "log.tsv")]);
   assert.equal(record(A).trails[0].mode, "linked");
 });
+
+test("a secret in a file git calls binary still blocks the push", (t) => {
+  const { store, run, home } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  run(["register", A]);
+  writeFileSync(join(home(A), "capture.log"), `terminal output\x00\n${FAKE_KEY}`);
+  assert.match(run(["register", A]).err, /possible secret in .*capture\.log/);
+  assert.deepEqual(pushed(), [`retro: register ${A}`]);
+});
+
+test("a copied trail that is a git repo reaches the backup as files, not a gitlink", (t) => {
+  const { store, run, record } = sandbox(t);
+  const { pushedFiles } = backedUp(t, store);
+  const { repo, git } = gitRepo(t);
+  writeFileSync(join(repo, "decisions.tsv"), "ts\tphase\nunpushed\n");
+  git("commit", "-qam", "unpushed");
+  run(["register", A, "--trail", repo]);
+  const trail = record(A).trails[0];
+  assert.equal(trail.mode, "copied");
+  const relative = trail.path.slice(join(store, "retro").length + 1);
+  assert.ok(pushedFiles().includes(`${relative}/decisions.tsv`), "the trail's files are in the backup");
+  assert.ok(!existsSync(join(trail.path, ".git")));
+});
