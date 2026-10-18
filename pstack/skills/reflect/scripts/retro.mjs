@@ -217,37 +217,44 @@ function current(rec, source) {
   return rec.trails.filter((t) => t.source === source).at(-1);
 }
 
-// Copies are never overwritten: a changed source gets a new version beside the old ones.
-function addTrail(home, rec, path, at) {
+// Every check and read happens here, before anything is copied, so a refusal leaves nothing behind.
+function planTrail(rec, path) {
   const source = resolve(path);
   const last = current(rec, source);
   if (!existsSync(source)) {
-    if (last?.mode === "copied" && existsSync(last.path)) {
-      console.error(`warning: ${source} is gone; keeping the copy at ${last.path}`);
-      return;
-    }
+    if (last?.mode === "copied" && existsSync(last.path)) return { kind: "keep", source, path: last.path };
     refuse(`trail not found: ${source}`);
   }
   const target = real(source);
   const { mode, commit } = trailMode(target);
-  if (mode === "linked") {
-    rec.trails = rec.trails.filter((t) => !(t.source === source && t.mode === "linked")).concat({ source, mode, path: target, ...(commit && { commit }), at: stamp(at) });
-    return;
-  }
+  if (mode === "linked") return { kind: "link", source, target, commit };
   let sum;
   try {
     sum = digest(source);
   } catch (err) {
     refuse(`cannot read every file under ${source}: ${err.message}`);
   }
-  if (last?.mode === "copied" && last.sha256 === sum && existsSync(last.path)) return;
+  if (last?.mode === "copied" && last.sha256 === sum && existsSync(last.path)) return { kind: "same" };
+  return { kind: "copy", source, sum };
+}
+
+// Copies are never overwritten: a changed source gets a new version beside the old ones.
+function applyTrail(home, rec, plan, at) {
+  if (plan.kind === "keep") return console.error(`warning: ${plan.source} is gone; keeping the copy at ${plan.path}`);
+  if (plan.kind === "same") return;
+  const { source } = plan;
+  if (plan.kind === "link") {
+    const entry = { source, mode: "linked", path: plan.target, ...(plan.commit && { commit: plan.commit }), at: stamp(at) };
+    rec.trails = rec.trails.filter((t) => !(t.source === source && t.mode === "linked")).concat(entry);
+    return;
+  }
   const dest = unique(join(home, "trails", `${compact(at)}-${basename(source)}`));
   const staged = `${dest}.tmp-${process.pid}`;
   mkdirSync(dirname(dest), { recursive: true });
   rmSync(staged, { recursive: true, force: true });
   copyResolved(source, staged);
   renameSync(staged, dest);
-  rec.trails.push({ source, mode, path: dest, sha256: sum, at: stamp(at) });
+  rec.trails.push({ source, mode: "copied", path: dest, sha256: plan.sum, at: stamp(at) });
 }
 
 function threadRecord(id, args, at) {
@@ -287,11 +294,8 @@ function cmdRegister(args) {
   const dir = args.reflected && resolve(args.reflected);
   if (dir && !within(dir, home)) refuse(`--reflected takes a folder inside ${home}, got ${dir}`);
   if (dir && !isFile(join(dir, "synthesis.md"))) refuse(`write the reflect outputs first: ${join(dir, "synthesis.md")} is missing`);
-  for (const trail of args.trail) {
-    const last = current(rec, resolve(trail));
-    if (!existsSync(trail) && !(last?.mode === "copied" && existsSync(last.path))) refuse(`trail not found: ${resolve(trail)}`);
-  }
-  for (const trail of args.trail) addTrail(home, rec, trail, at);
+  const plans = args.trail.map((trail) => planTrail(rec, trail));
+  for (const plan of plans) applyTrail(home, rec, plan, at);
   if (dir && !rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
   writeJson(file, rec);
   refreshRegistry();
@@ -440,6 +444,7 @@ function cmdOpen(args) {
   }
   if (ids.length === 0 && !args.earlier) refuse("no threads are waiting; pass --threads to choose some");
   for (const p of args.input) if (!existsSync(p)) refuse(`input not found: ${p}`);
+  for (const p of args.input) if (within(ROUNDS, real(p))) refuse(`input ${p} contains the rounds folder; name something inside it instead`);
   const reflects = ids.flatMap((id) => pendingReflects(state.threads.get(id), state.rounds).map((c) => c.dir));
   const dir = unique(join(ROUNDS, day(at)));
   const inputs = args.input.map((p) => ({ source: resolve(p), copy: null }));

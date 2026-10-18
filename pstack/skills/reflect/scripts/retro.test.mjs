@@ -414,6 +414,26 @@ test("other inputs are copied into the round", (t) => {
   assert.match(readFileSync(join(dir, "README.md"), "utf-8"), /copied to `inputs\/other\/audit\.md`/);
 });
 
+test("a trail that cannot be read refuses before any trail is copied", (t) => {
+  const { run, home, record } = sandbox(t);
+  const scratch = scratchDir(t);
+  writeFileSync(join(scratch, "log.tsv"), "v1\n");
+  run(["register", A, "--trail", join(scratch, "log.tsv")]);
+  writeFileSync(join(scratch, "log.tsv"), "v2\n");
+  mkdirSync(join(scratch, "broken"));
+  symlinkSync(join(scratch, "nowhere"), join(scratch, "broken", "link"));
+  assert.match(run(["register", A, "--trail", join(scratch, "log.tsv"), "--trail", join(scratch, "broken")]).err, /cannot read every file/);
+  assert.equal(record(A).trails.length, 1);
+  assert.equal(readdirSync(join(home(A), "trails")).length, 1);
+});
+
+test("an input that contains the rounds folder is refused", (t) => {
+  const { store, run, reflect } = sandbox(t);
+  reflect(A);
+  assert.match(run(["open", "--input", store]).err, /contains the rounds folder/);
+  assert.ok(!existsSync(join(store, "retro", "rounds")) || readdirSync(join(store, "retro", "rounds")).length === 0);
+});
+
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);
