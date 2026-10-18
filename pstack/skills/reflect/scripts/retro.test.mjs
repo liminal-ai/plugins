@@ -621,3 +621,29 @@ test("a copied trail's own ignore rules do not keep its files out of the backup"
   assert.ok(pushedFiles().includes(`${relative}/decisions.tsv`));
   assert.ok(!pushedFiles().includes(`${relative}/run.tmp-1`), "the retro folder's own rules still apply");
 });
+
+test("a file written during the scan or before the push is never pushed unscanned", (t) => {
+  const { store, run, home } = sandbox(t);
+  const { remote, git, pushed } = backedUp(t, store);
+  run(["register", A]);
+  const bin = scratchDir(t);
+  const payload = join(bin, "payload");
+  writeFileSync(payload, `reviewer output\x00\n${FAKE_KEY}`);
+  const writeOnce = (target) => `[ -e "$0.done" ] || { cp ${payload} ${target}; touch "$0.done"; }\n`;
+  writeFileSync(join(bin, "gitleaks"), `#!/bin/sh\n${writeOnce(join(home(A), "reviewer-output.md"))}exit 0\n`, { mode: 0o755 });
+  writeFileSync(join(store, "retro", ".git", "hooks", "pre-push"), `#!/bin/sh\n${writeOnce(join(home(A), "capture.log"))}`, { mode: 0o755 });
+  const leaked = () => spawnSync("git", ["--git-dir", remote, "log", "-p", "--text", "main"], { encoding: "utf-8" }).stdout.includes("BEGIN OPENSSH");
+  const withWriter = { PATH: `${bin}:${process.env.PATH}` };
+
+  assert.equal(run(["register", A, "--title", "first"], undefined, withWriter).code, 0);
+  assert.ok(existsSync(join(home(A), "reviewer-output.md")) && existsSync(join(home(A), "capture.log")), "both writers ran");
+  assert.equal(pushed().length, 2, "the scanned commit was pushed");
+  assert.ok(!leaked(), "files written after the commit stay off the remote");
+
+  const next = run(["register", A], undefined, withWriter);
+  assert.match(next.err, /possible secret in .*reviewer-output\.md/);
+  assert.match(next.err, /possible secret in .*capture\.log/);
+  assert.equal(pushed().length, 2);
+  assert.ok(!leaked());
+  assert.equal(git("status", "--porcelain").stdout.split("\n").filter((l) => l && !l.endsWith("REGISTRY.md")).join("\n"), "", "the next write committed them locally");
+});
