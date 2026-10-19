@@ -57,7 +57,10 @@ query HeadChecks($owner: String!, $repo: String!, $oid: GitObjectID!, $after: St
             pageInfo { hasNextPage endCursor }
             nodes {
               __typename
-              ... on CheckRun { name status conclusion detailsUrl checkSuite { app { slug } } }
+              ... on CheckRun {
+                name status conclusion detailsUrl
+                checkSuite { app { slug } workflowRun { event workflow { id } } }
+              }
               ... on StatusContext { context state targetUrl }
             }
           }
@@ -143,6 +146,44 @@ function checkApp(node: unknown, name: string): string | null {
   );
 }
 
+interface Run {
+  readonly check: HeadCheck;
+  /** Workflow id, event and check name for an Actions run; null for any other check. */
+  readonly key: string | null;
+  readonly cancelled: boolean;
+}
+
+function readRun(node: unknown, check: HeadCheck): Run {
+  const fields = record(node, "check");
+  const cancelled = fields.conclusion === "CANCELLED";
+  if (fields.__typename !== "CheckRun") return { check, key: null, cancelled };
+  const workflowRun = at(node, ["checkSuite", "workflowRun"]);
+  if (workflowRun === null) return { check, key: null, cancelled };
+  const key = JSON.stringify([
+    string(at(workflowRun, ["workflow", "id"]), "workflow.id"),
+    string(at(workflowRun, ["event"]), "workflowRun.event"),
+    check.name,
+  ]);
+  return { check, key, cancelled };
+}
+
+/**
+ * A concurrency group cancels a run when a newer one starts, so a cancelled
+ * Actions run with a non-cancelled sibling defers to that sibling, whatever its
+ * state. Only cancellations are dropped: ordering runs by number or start time
+ * cannot tell a rerun of an older run from a superseded one.
+ */
+function dropSupersededCancellations(runs: readonly Run[]): HeadCheck[] {
+  const decided = new Set(
+    runs
+      .filter((run) => run.key !== null && !run.cancelled)
+      .map((run) => run.key)
+  );
+  return runs
+    .filter((run) => !(run.cancelled && decided.has(run.key)))
+    .map((run) => run.check);
+}
+
 function readError(detail: string): never {
   throw new ReadError(detail);
 }
@@ -201,7 +242,7 @@ export class GhGitHub implements GitHub {
   }
 
   async checks(repo: Repository, head: string): Promise<readonly HeadCheck[]> {
-    const checks: HeadCheck[] = [];
+    const runs: Run[] = [];
     let after: string | null = null;
     do {
       const value = await graphql(CHECKS_QUERY, repo, {
@@ -214,7 +255,7 @@ export class GhGitHub implements GitHub {
       if (!("statusCheckRollup" in fields))
         readError(`commit ${head} came back without statusCheckRollup`);
       const rollup = fields.statusCheckRollup;
-      if (rollup === null) return checks;
+      if (rollup === null) return dropSupersededCancellations(runs);
       const contexts = record(
         at(rollup, ["contexts"]),
         "statusCheckRollup.contexts"
@@ -225,11 +266,11 @@ export class GhGitHub implements GitHub {
           readError(
             `a check on ${head} came back in a shape the gate cannot read`
           );
-        checks.push({ ...check, app: checkApp(node, check.name) });
+        runs.push(readRun(node, { ...check, app: checkApp(node, check.name) }));
       }
       after = nextCursor(contexts.pageInfo, "contexts.pageInfo");
     } while (after !== null);
-    return checks;
+    return dropSupersededCancellations(runs);
   }
 
   async openThreads(pr: PrRef): Promise<readonly OpenThread[]> {

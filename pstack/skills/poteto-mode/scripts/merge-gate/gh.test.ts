@@ -94,7 +94,13 @@ beforeAll(() => {
                   status: "COMPLETED",
                   conclusion: "SUCCESS",
                   detailsUrl: "",
-                  checkSuite: { app: { slug: "github-actions" } },
+                  checkSuite: {
+                    app: { slug: "github-actions" },
+                    workflowRun: {
+                      event: "pull_request",
+                      workflow: { id: "W_ci" },
+                    },
+                  },
                 },
                 {
                   __typename: "CheckRun",
@@ -102,7 +108,7 @@ beforeAll(() => {
                   status: "QUEUED",
                   conclusion: null,
                   detailsUrl: "",
-                  checkSuite: { app: { slug: "cursor" } },
+                  checkSuite: { app: { slug: "cursor" }, workflowRun: null },
                 },
                 {
                   __typename: "StatusContext",
@@ -529,9 +535,127 @@ it("counts a failed check run from an app with no slug in its suite", async () =
       status: "COMPLETED",
       conclusion: "FAILURE",
       detailsUrl: "",
-      checkSuite: { app: null },
+      checkSuite: { app: null, workflowRun: null },
     })
   );
   expect(result.exit).toBe(1);
   expect(result.out).toContain("missing: Checks. 1 failed (Cursor Bugbot)");
+});
+
+const actionsRun = (
+  conclusion: string | null,
+  { workflow = "W_ci", event = "pull_request" } = {}
+) => ({
+  __typename: "CheckRun",
+  name: "test",
+  status: conclusion === null ? "IN_PROGRESS" : "COMPLETED",
+  conclusion,
+  detailsUrl: "",
+  checkSuite: {
+    app: { slug: "github-actions" },
+    workflowRun: { event, workflow: { id: workflow } },
+  },
+});
+const checksOf = (...nodes: unknown[]) =>
+  checksPage({
+    statusCheckRollup: {
+      contexts: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes,
+      },
+    },
+  });
+
+it("ignores a cancelled run of a check that another run passed", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(actionsRun("CANCELLED"), actionsRun("SUCCESS"))
+  );
+  expect(result.exit).toBe(0);
+  expect(result.out).toContain("met: Checks (1 passed)");
+});
+
+it("waits for a running sibling of a cancelled run", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(actionsRun("CANCELLED"), actionsRun(null))
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 still running (test)");
+});
+
+it("fails on a failed sibling of a cancelled run", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(actionsRun("CANCELLED"), actionsRun("FAILURE"))
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 failed (test)");
+});
+
+it("counts cancelled runs that no other run of the check outlived", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(actionsRun("CANCELLED"), actionsRun("CANCELLED"))
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 2 failed (test, test)");
+});
+
+it("counts a cancelled run when only another workflow's check of that name passed", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(
+      actionsRun("CANCELLED"),
+      actionsRun("SUCCESS", { workflow: "W_other" })
+    )
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 failed (test)");
+});
+
+it("counts a cancelled run when only another event's run of the check passed", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(actionsRun("CANCELLED"), actionsRun("SUCCESS", { event: "push" }))
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 failed (test)");
+});
+
+it.each([
+  ["pull_request", null, "1 still running (test)"],
+  ["pull_request", "FAILURE", "1 failed (test)"],
+  ["workflow_dispatch", null, "1 still running (test)"],
+  ["workflow_dispatch", "FAILURE", "1 failed (test)"],
+])(
+  "keeps a %s run in state %p that another run of the check passed",
+  async (event, conclusion, missing) => {
+    const result = await checkWith(
+      "checks.json",
+      checksOf(
+        actionsRun(conclusion, { event }),
+        actionsRun("SUCCESS", { event })
+      )
+    );
+    expect(result.exit).toBe(1);
+    expect(result.out).toContain(`missing: Checks. ${missing}`);
+  }
+);
+
+it("counts every run of a check from outside GitHub Actions", async () => {
+  const appRun = (conclusion: string) => ({
+    __typename: "CheckRun",
+    name: "lint",
+    status: "COMPLETED",
+    conclusion,
+    detailsUrl: "",
+    checkSuite: { app: { slug: "macroscopeapp" }, workflowRun: null },
+  });
+  const result = await checkWith(
+    "checks.json",
+    checksOf(appRun("CANCELLED"), appRun("SUCCESS"))
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 failed (lint)");
 });
