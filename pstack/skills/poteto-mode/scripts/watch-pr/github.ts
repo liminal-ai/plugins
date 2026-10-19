@@ -609,7 +609,8 @@ export class GhGitHubReader implements T.GitHubReader {
 
 export async function resolveChecks(
   reader: T.GitHubReader,
-  context: T.PrContext
+  context: T.PrContext,
+  expectNoChecks: boolean
 ): Promise<T.CheckRead> {
   const fast = await reader.checksFastPath(context);
   const direct = fast.kind === "checks" ? nonEmpty(fast.checks) : null;
@@ -623,11 +624,14 @@ export async function resolveChecks(
   } while (after !== null);
   const fallback = nonEmpty(checks);
   if (fallback !== null) return { source: "graphql-rollup", checks: fallback };
+  if (expectNoChecks) return { source: "graphql-rollup", checks: [] };
   const suffix =
     fast.kind === "unusable"
       ? `fast path exit=${fast.exitCode}; GraphQL rollup was empty${firstLine(fast.stderr) ? `; ${firstLine(fast.stderr)}` : ""}`
       : "fast path and GraphQL rollup were empty";
-  throw new ChecksUnavailable(`could not read PR checks: ${suffix}`);
+  throw new ChecksUnavailable(
+    `could not read PR checks: ${suffix}; pass --expect-no-checks if no workflow runs for this PR`
+  );
 }
 export async function resolveReviewThreads(
   reader: T.GitHubReader,

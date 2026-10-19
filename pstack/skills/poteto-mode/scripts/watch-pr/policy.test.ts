@@ -40,6 +40,7 @@ const options = {
   timeout: 0,
   maxQueryErrors: 5,
   allowDraft: false,
+  expectNoChecks: false,
 } satisfies PollingOptions;
 
 describe("readiness truth table", () => {
@@ -79,6 +80,7 @@ describe("readiness truth table", () => {
       context: context(1),
       pendingHistory: "include",
       allowDraft: false,
+      expectNoChecks: false,
     });
     expect(snapshot.kind).toBe("open");
     if (snapshot.kind !== "open") throw new Error("expected open snapshot");
@@ -100,6 +102,7 @@ describe("snapshot query planning", () => {
       context: context(2),
       pendingHistory: "omit",
       allowDraft: false,
+      expectNoChecks: false,
     });
     expect(snapshot.kind).toBe("open");
     if (snapshot.kind !== "open") throw new Error("expected open snapshot");
@@ -118,6 +121,7 @@ describe("snapshot query planning", () => {
       context: context(3),
       pendingHistory: "omit",
       allowDraft: false,
+      expectNoChecks: false,
     });
     expect(settled.calls).toContain("commitRollups");
 
@@ -129,6 +133,7 @@ describe("snapshot query planning", () => {
       context: context(4),
       pendingHistory: "omit",
       allowDraft: false,
+      expectNoChecks: false,
     });
     expect(failed.calls).toContain("commitRollups");
   });
@@ -144,6 +149,7 @@ describe("snapshot query planning", () => {
           context: context(5),
           pendingHistory: "include",
           allowDraft: false,
+          expectNoChecks: false,
         })
       ).kind
     ).toBe("merged");
@@ -160,12 +166,14 @@ it("scans stacks tier-major so an upstack conflict outranks frontier CI", async 
     context: context(10),
     pendingHistory: "omit",
     allowDraft: false,
+    expectNoChecks: false,
   });
   const upstack = await readSnapshot({
     reader: fakeReader({ facts: { mergeable: "CONFLICTING" } }),
     context: context(11),
     pendingHistory: "omit",
     allowDraft: false,
+    expectNoChecks: false,
   });
   const decision = selectTierMajorStackDecision([frontier, upstack]);
   expect(decision).toMatchObject({
@@ -180,6 +188,7 @@ it("attributes a stack wait to the PR whose checks are pending, not the bottom",
     context: context(20),
     pendingHistory: "omit",
     allowDraft: false,
+    expectNoChecks: false,
   });
   const pendingUpstack = await readSnapshot({
     reader: fakeReader({
@@ -188,6 +197,7 @@ it("attributes a stack wait to the PR whose checks are pending, not the bottom",
     context: context(21),
     pendingHistory: "omit",
     allowDraft: false,
+    expectNoChecks: false,
   });
   const decision = selectTierMajorStackDecision([readyBottom, pendingUpstack]);
   expect(decision).toMatchObject({
@@ -206,6 +216,7 @@ it("waits on a draft while checks are pending, then reports the draft gate", asy
     context: context(12),
     pendingHistory: "omit",
     allowDraft: false,
+    expectNoChecks: false,
   });
   expect(classifyPr(pending).kind).toBe("waiting");
 
@@ -214,6 +225,7 @@ it("waits on a draft while checks are pending, then reports the draft gate", asy
     context: context(12),
     pendingHistory: "omit",
     allowDraft: false,
+    expectNoChecks: false,
   });
   expect(classifyPr(settled)).toMatchObject({
     kind: "blocker",
@@ -228,6 +240,7 @@ describe("queued-stack cadence", () => {
       context: pr,
       pendingHistory: "omit",
       allowDraft: false,
+      expectNoChecks: false,
     });
   }
 
