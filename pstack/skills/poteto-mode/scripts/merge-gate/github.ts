@@ -57,7 +57,10 @@ query HeadChecks($owner: String!, $repo: String!, $oid: GitObjectID!, $after: St
             pageInfo { hasNextPage endCursor }
             nodes {
               __typename
-              ... on CheckRun { name status conclusion detailsUrl checkSuite { app { slug } } }
+              ... on CheckRun {
+                name status conclusion detailsUrl
+                checkSuite { app { slug } workflowRun { id event workflow { id } } }
+              }
               ... on StatusContext { context state targetUrl }
             }
           }
@@ -143,6 +146,55 @@ function checkApp(node: unknown, name: string): string | null {
   );
 }
 
+interface Run {
+  readonly check: HeadCheck;
+  /** Workflow id, event and check name for an Actions run; null for any other check. */
+  readonly key: string | null;
+  readonly workflowRun: string | null;
+  readonly cancelled: boolean;
+}
+
+function readRun(node: unknown, check: HeadCheck): Run {
+  const fields = record(node, "check");
+  const cancelled = fields.conclusion === "CANCELLED";
+  const other = { check, key: null, workflowRun: null, cancelled };
+  if (fields.__typename !== "CheckRun") return other;
+  const workflowRun = at(node, ["checkSuite", "workflowRun"]);
+  if (workflowRun === null) return other;
+  const key = JSON.stringify([
+    string(at(workflowRun, ["workflow", "id"]), "workflow.id"),
+    string(at(workflowRun, ["event"]), "workflowRun.event"),
+    check.name,
+  ]);
+  const id = string(at(workflowRun, ["id"]), "workflowRun.id");
+  return { check, key, workflowRun: id, cancelled };
+}
+
+/**
+ * A concurrency group cancels a workflow run when another starts, so a
+ * cancelled Actions check defers to another workflow run in which no check of
+ * that key was cancelled, whatever that run's state. Only cancellations are
+ * dropped: ordering runs by number or start time cannot tell a rerun of an
+ * older run from a superseded one. A cancelled job next to a same-named job of
+ * its own workflow run is never superseded, so it still counts.
+ */
+function dropSupersededCancellations(runs: readonly Run[]): HeadCheck[] {
+  const workflowRuns = new Map<string, Map<string, boolean>>();
+  for (const { key, workflowRun, cancelled } of runs) {
+    if (key === null || workflowRun === null) continue;
+    const byRun = workflowRuns.get(key) ?? new Map<string, boolean>();
+    byRun.set(workflowRun, (byRun.get(workflowRun) ?? true) && !cancelled);
+    workflowRuns.set(key, byRun);
+  }
+  const superseded = ({ key, workflowRun, cancelled }: Run): boolean =>
+    cancelled &&
+    key !== null &&
+    [...(workflowRuns.get(key) ?? [])].some(
+      ([other, clean]) => clean && other !== workflowRun
+    );
+  return runs.filter((run) => !superseded(run)).map((run) => run.check);
+}
+
 function readError(detail: string): never {
   throw new ReadError(detail);
 }
@@ -201,7 +253,7 @@ export class GhGitHub implements GitHub {
   }
 
   async checks(repo: Repository, head: string): Promise<readonly HeadCheck[]> {
-    const checks: HeadCheck[] = [];
+    const runs: Run[] = [];
     let after: string | null = null;
     do {
       const value = await graphql(CHECKS_QUERY, repo, {
@@ -214,7 +266,7 @@ export class GhGitHub implements GitHub {
       if (!("statusCheckRollup" in fields))
         readError(`commit ${head} came back without statusCheckRollup`);
       const rollup = fields.statusCheckRollup;
-      if (rollup === null) return checks;
+      if (rollup === null) return dropSupersededCancellations(runs);
       const contexts = record(
         at(rollup, ["contexts"]),
         "statusCheckRollup.contexts"
@@ -225,11 +277,11 @@ export class GhGitHub implements GitHub {
           readError(
             `a check on ${head} came back in a shape the gate cannot read`
           );
-        checks.push({ ...check, app: checkApp(node, check.name) });
+        runs.push(readRun(node, { ...check, app: checkApp(node, check.name) }));
       }
       after = nextCursor(contexts.pageInfo, "contexts.pageInfo");
     } while (after !== null);
-    return checks;
+    return dropSupersededCancellations(runs);
   }
 
   async openThreads(pr: PrRef): Promise<readonly OpenThread[]> {
