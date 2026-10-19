@@ -293,8 +293,8 @@ export function fakeGitHub(
         []
       );
     },
-    async merge(pr, head) {
-      step("merge", pr, `#${pr.number} ${head}`);
+    async merge(pr, head, method) {
+      step("merge", pr, `#${pr.number} ${head} ${method}`);
       return options.merge ?? { ok: true };
     },
     async readBack(pr) {

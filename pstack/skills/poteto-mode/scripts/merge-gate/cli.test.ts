@@ -70,10 +70,26 @@ describe("merge-gate", () => {
     expect(result.out.split("\n")[0]).toBe(
       `MERGED: owner/repo#1 at ${repos.head.slice(0, 7)} into main as fffffff`
     );
-    expect(result.calls).toContain(`merge owner/repo#1 ${repos.head}`);
+    expect(result.calls).toContain(`merge owner/repo#1 ${repos.head} squash`);
     expect(
       result.calls.every((call) => call.split(" ")[1]?.startsWith("owner/repo"))
     ).toBe(true);
+  });
+
+  for (const method of ["merge", "rebase"] as const)
+    it(`merges the evaluated head by ${method} under --method ${method}`, async () => {
+      const result = await gate({}, ["--method", method]);
+      expect(result.exit).toBe(0);
+      expect(result.calls).toContain(
+        `merge owner/repo#1 ${repos.head} ${method}`
+      );
+    });
+
+  it("exits 2 and merges nothing on an unknown --method", async () => {
+    const result = await gate({}, ["--method", "fast-forward"]);
+    expect(result.exit).toBe(2);
+    expect(result.out).toContain("--method");
+    expect(merged(result.calls)).toBe(false);
   });
 
   describe("open and mergeable", () => {

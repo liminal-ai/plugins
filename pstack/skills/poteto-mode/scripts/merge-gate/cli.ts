@@ -1,7 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Command, CommanderError, InvalidArgumentError } from "commander";
+import {
+  Command,
+  CommanderError,
+  InvalidArgumentError,
+  Option,
+} from "commander";
 import { WatcherQueryError } from "../watch-pr/github.ts";
 import type { Repository } from "../watch-pr/types.ts";
 import { parsePrNumber } from "../watch-pr/types.ts";
@@ -17,7 +22,9 @@ import { Git, ReadError } from "./git.ts";
 import {
   GhGitHub,
   type GitHub,
+  MERGE_METHODS,
   type MergeAttempt,
+  type MergeMethod,
   type MergeReadBack,
 } from "./github.ts";
 import { readFacts } from "./read.ts";
@@ -37,6 +44,7 @@ interface Options {
   readonly pr: PrRef["number"];
   readonly repo: Repository | null;
   readonly check: boolean;
+  readonly method: MergeMethod;
 }
 
 interface RunRecord {
@@ -83,14 +91,25 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
       "GitHub repo (default: the origin remote's repo)",
       parseRepo
     )
-    .option("--check", "evaluate and print, merge nothing", false);
+    .option("--check", "evaluate and print, merge nothing", false)
+    .addOption(
+      new Option("--method <method>", "how GitHub merges the PR")
+        .choices(MERGE_METHODS)
+        .default("squash")
+    );
   program.parse(argv, { from: "user" });
   const raw = program.opts<{
     pr: PrRef["number"];
     repo?: Repository;
     check: boolean;
+    method: MergeMethod;
   }>();
-  return { pr: raw.pr, repo: raw.repo ?? null, check: raw.check };
+  return {
+    pr: raw.pr,
+    repo: raw.repo ?? null,
+    check: raw.check,
+    method: raw.method,
+  };
 }
 
 const cell = (value: string): string => value.replace(/[\t\r\n]+/g, " ");
@@ -200,7 +219,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     };
 
   const attempt = await runtime.github
-    .merge(pr, head)
+    .merge(pr, head, options.method)
     .catch((error: unknown): MergeAttempt => ({
       ok: false,
       detail: message(error),
