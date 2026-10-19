@@ -29,6 +29,9 @@ export interface MergeReadBack {
   readonly mergeCommit: string | null;
 }
 
+export const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
+
 export type MergeAttempt =
   { readonly ok: true } | { readonly ok: false; readonly detail: string };
 
@@ -40,7 +43,7 @@ export interface GitHub {
   checks(repo: Repository, head: string): Promise<readonly HeadCheck[]>;
   openThreads(pr: PrRef): Promise<readonly OpenThread[]>;
   issueComments(pr: PrRef): Promise<readonly IssueComment[]>;
-  merge(pr: PrRef, head: string): Promise<MergeAttempt>;
+  merge(pr: PrRef, head: string, method: MergeMethod): Promise<MergeAttempt>;
   readBack(pr: PrRef): Promise<MergeReadBack>;
 }
 
@@ -323,7 +326,11 @@ export class GhGitHub implements GitHub {
     );
   }
 
-  async merge(pr: PrRef, head: string): Promise<MergeAttempt> {
+  async merge(
+    pr: PrRef,
+    head: string,
+    method: MergeMethod
+  ): Promise<MergeAttempt> {
     const result = await run([
       "gh",
       "pr",
@@ -331,7 +338,7 @@ export class GhGitHub implements GitHub {
       String(pr.number),
       "--repo",
       repoName(pr),
-      "--squash",
+      `--${method}`,
       "--match-head-commit",
       head,
     ]);

@@ -192,6 +192,34 @@ it("reads and merges through gh, naming the repo on every call", async () => {
   ]);
 });
 
+it("passes --method merge to gh pr merge with the pinned head", async () => {
+  const before = new Set(readdirSync(join(dir, "calls")));
+  const runtime = runtimeFor(new GhGitHub(), repos.gate);
+  const exit = await main(
+    ["--repo", "owner/repo", "--pr", "1", "--method", "merge"],
+    runtime
+  );
+  expect(exit).toBe(0);
+  const merges = readdirSync(join(dir, "calls"))
+    .filter((name) => !before.has(name))
+    .map((name) =>
+      readFileSync(join(dir, "calls", name), "utf8").split("\0").slice(0, -1)
+    )
+    .filter((argv) => argv[1] === "merge");
+  expect(merges).toEqual([
+    [
+      "pr",
+      "merge",
+      "1",
+      "--repo",
+      "owner/repo",
+      "--merge",
+      "--match-head-commit",
+      repos.head,
+    ],
+  ]);
+});
+
 async function checkWith(name: string, value: unknown) {
   const path = join(dir, name);
   const saved = readFileSync(path, "utf8");
