@@ -97,6 +97,7 @@ beforeAll(() => {
                   checkSuite: {
                     app: { slug: "github-actions" },
                     workflowRun: {
+                      id: "R_1",
                       event: "pull_request",
                       workflow: { id: "W_ci" },
                     },
@@ -209,7 +210,9 @@ it("passes --method merge to gh pr merge with the pinned head", async () => {
   const merges = readdirSync(join(dir, "calls"))
     .filter((name) => !before.has(name))
     .map((name) =>
-      readFileSync(join(dir, "calls", name), "utf8").split("\0").slice(0, -1)
+      readFileSync(join(dir, "calls", name), "utf8")
+        .split("\0")
+        .slice(0, -1)
     )
     .filter((argv) => argv[1] === "merge");
   expect(merges).toEqual([
@@ -542,9 +545,14 @@ it("counts a failed check run from an app with no slug in its suite", async () =
   expect(result.out).toContain("missing: Checks. 1 failed (Cursor Bugbot)");
 });
 
+let workflowRuns = 0;
 const actionsRun = (
   conclusion: string | null,
-  { workflow = "W_ci", event = "pull_request" } = {}
+  {
+    workflow = "W_ci",
+    event = "pull_request",
+    run = `R_${++workflowRuns}`,
+  } = {}
 ) => ({
   __typename: "CheckRun",
   name: "test",
@@ -553,7 +561,7 @@ const actionsRun = (
   detailsUrl: "",
   checkSuite: {
     app: { slug: "github-actions" },
-    workflowRun: { event, workflow: { id: workflow } },
+    workflowRun: { id: run, event, workflow: { id: workflow } },
   },
 });
 const checksOf = (...nodes: unknown[]) =>
@@ -621,6 +629,32 @@ it("counts a cancelled run when only another event's run of the check passed", a
   );
   expect(result.exit).toBe(1);
   expect(result.out).toContain("missing: Checks. 1 failed (test)");
+});
+
+it("counts a cancelled job next to a passed job of the same name in its own workflow run", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(
+      actionsRun("CANCELLED", { run: "R_a" }),
+      actionsRun("SUCCESS", { run: "R_a" })
+    )
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 1 failed (test)");
+});
+
+it("counts a cancelled job when no other workflow run finished that name uncancelled", async () => {
+  const result = await checkWith(
+    "checks.json",
+    checksOf(
+      actionsRun("SUCCESS", { run: "R_a" }),
+      actionsRun("CANCELLED", { run: "R_a" }),
+      actionsRun("SUCCESS", { run: "R_b" }),
+      actionsRun("CANCELLED", { run: "R_b" })
+    )
+  );
+  expect(result.exit).toBe(1);
+  expect(result.out).toContain("missing: Checks. 2 failed (test, test)");
 });
 
 it.each([
