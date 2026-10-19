@@ -131,7 +131,7 @@ export function parseArgs(
     .option("--allow-draft", "do not treat a draft as a merge gate", false)
     .option(
       "--expect-no-checks",
-      "read an empty check list as clean; pass only when no workflow runs for the PR",
+      "read an empty check list as clean; pass only when no workflow runs for any watched PR",
       false
     )
     .option("--pretty", "render human text instead of JSON", false);
