@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type CliRuntime, main, parseArgs } from "./cli.ts";
-import { fakeReader, passingCheck } from "./fakes.test-helper.ts";
+import { failedCheck, fakeReader, passingCheck } from "./fakes.test-helper.ts";
 import { renderJson, renderPretty } from "./render.ts";
 import type { GitHubReader, WatcherVerdict } from "./types.ts";
 import { parsePrNumber } from "./types.ts";
@@ -79,6 +79,7 @@ describe("parseArgs", () => {
       timeout: 0,
       maxQueryErrors: 3,
       allowDraft: true,
+      expectNoChecks: false,
     });
     expect(parsed.pretty).toBe(true);
   });
@@ -211,6 +212,63 @@ describe("main", () => {
         kind: "failing-checks",
         ci: { kind: "ci-github-rejected" },
       },
+    });
+  });
+
+  it("reads an empty check list as clean under --expect-no-checks", async () => {
+    const reader = fakeReader({
+      fastPath: { kind: "checks", checks: [] },
+      commitRollups: [{ oid: "head", state: null }],
+    });
+    const harness = testRuntime(reader);
+    const code = await main(
+      ["--owner", "owner", "--repo", "repo", "--pr", "1", "--expect-no-checks"],
+      harness.runtime
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(harness.stdout.at(-1) ?? "")).toMatchObject({
+      kind: "READY",
+      exitCode: 0,
+    });
+  });
+
+  it("names --expect-no-checks when it gives up on an empty check list", async () => {
+    const reader = fakeReader({ fastPath: { kind: "checks", checks: [] } });
+    const harness = testRuntime(reader);
+    const code = await main(
+      [
+        "--owner",
+        "owner",
+        "--repo",
+        "repo",
+        "--pr",
+        "1",
+        "--status-only",
+        "--max-query-errors",
+        "1",
+      ],
+      harness.runtime
+    );
+    expect(code).toBe(7);
+    expect(JSON.parse(harness.stdout.at(-1) ?? "")).toMatchObject({
+      kind: "BLOCKER",
+      blocker: { kind: "status-query" },
+    });
+    expect(harness.stdout.at(-1)).toContain("--expect-no-checks");
+  });
+
+  it("still blocks on a failing check under --expect-no-checks", async () => {
+    const reader = fakeReader({
+      fastPath: { kind: "checks", checks: [failedCheck()] },
+    });
+    const harness = testRuntime(reader);
+    const code = await main(
+      ["--owner", "owner", "--repo", "repo", "--pr", "1", "--expect-no-checks"],
+      harness.runtime
+    );
+    expect(code).toBe(4);
+    expect(JSON.parse(harness.stdout.at(-1) ?? "")).toMatchObject({
+      blocker: { kind: "failing-checks" },
     });
   });
 

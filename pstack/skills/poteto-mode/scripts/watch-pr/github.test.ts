@@ -31,7 +31,7 @@ describe("checks fallback chain", () => {
     const reader = fakeReader({
       fastPath: { kind: "checks", checks: [passingCheck("fast")] },
     });
-    const read = await resolveChecks(reader, context);
+    const read = await resolveChecks(reader, context, false);
     expect(read.source).toBe("gh-pr-checks");
     expect(read.checks.map((check) => check.name)).toEqual(["fast"]);
     expect(reader.calls).toEqual(["checksFastPath"]);
@@ -45,7 +45,7 @@ describe("checks fallback chain", () => {
         { checks: [failedCheck("second")], endCursor: null },
       ],
     });
-    const read = await resolveChecks(reader, context);
+    const read = await resolveChecks(reader, context, false);
     expect(read.source).toBe("graphql-rollup");
     expect(read.checks.map((check) => check.name)).toEqual(["first", "second"]);
     expect(reader.calls).toEqual([
@@ -60,7 +60,7 @@ describe("checks fallback chain", () => {
       fastPath: { kind: "checks", checks: [] },
       rollupPages: [{ checks: [pendingCheck("fallback")], endCursor: null }],
     });
-    expect((await resolveChecks(reader, context)).checks[0].name).toBe(
+    expect((await resolveChecks(reader, context, false)).checks[0].name).toBe(
       "fallback"
     );
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
@@ -74,7 +74,7 @@ describe("checks fallback chain", () => {
         stderr: "credential cannot read checks",
       },
     });
-    await expect(resolveChecks(reader, context)).rejects.toBeInstanceOf(
+    await expect(resolveChecks(reader, context, false)).rejects.toBeInstanceOf(
       ChecksUnavailable
     );
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
