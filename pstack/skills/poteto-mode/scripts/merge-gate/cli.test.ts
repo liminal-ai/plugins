@@ -471,6 +471,35 @@ describe("merge-gate", () => {
       expect(signed.out).toContain("1 skip signed by the lead");
     });
 
+    it("refuses a skip the verifier signs in a separate comment", async () => {
+      const lines = allDone().map((line) =>
+        line === "box perf: done" ? "box perf: skipped. Not run." : line
+      );
+      const result = await planGate([
+        verdictWith(lines),
+        comment(
+          "pstack-skip: perf by=codex/gpt-6.1-sol I am the verifier and accept my own skip."
+        ),
+      ]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  unsigned skip: perf");
+      expect(result.out).not.toContain("WOULD MERGE");
+    });
+
+    it("refuses a skip line with no signer", async () => {
+      const lines = allDone().map((line) =>
+        line === "box perf: done" ? "box perf: skipped. Not run." : line
+      );
+      for (const line of [
+        "pstack-skip: perf the lead accepts this",
+        "pstack-skip: perf by= the lead accepts this",
+      ]) {
+        const result = await planGate([verdictWith(lines), comment(line)]);
+        expect(result.exit).toBe(1);
+        expect(result.out).toContain("  unsigned skip: perf");
+      }
+    });
+
     it("ignores a skip signed by someone with no role in the repo", async () => {
       const lines = allDone().map((line) =>
         line === "box perf: done" ? "box perf: skipped. Not run." : line
