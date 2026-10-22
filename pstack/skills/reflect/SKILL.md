@@ -1,13 +1,13 @@
 ---
 name: reflect
-description: Spawn three parallel review subagents over the active transcript, surface learnings, and route each to a concrete edit on an existing skill. Use when the user says reflect. Use only when the user or another skill names it.
+description: Spawn three parallel review subagents over the active transcript, record what happened with evidence and a classification, and save it for the next retro round. Applies nothing. Use when the user says reflect. Use only when the user or another skill names it.
 ---
 
 # Reflect
 
-Mine the current conversation for durable learnings, then route them into skill edits.
+Record what happened in the current conversation, with evidence, for the next retro round. Reflect applies nothing. A retro round reads several threads' reflects together before anything changes, so changes rest on a broader view than one thread.
 
-Invoke when the user says "reflect" or "/reflect". Skip when the conversation is trivial, off-topic, or already covered by an existing skill the parent followed correctly. One-offs are not learnings.
+Invoke when the user says "reflect" or "/reflect". Skip when the conversation is trivial or off-topic.
 
 ## 1. Locate the active transcript
 
@@ -29,42 +29,20 @@ Pass each template verbatim, substituting the thread ID or digest where marked. 
 
 ## 3. Synthesize
 
-One `delegate_task` call, `target` from the `reflect judgment, divergent, synthesizer` line (default `claudeAgent/claude-opus-5-5 effort=xhigh`), in a read-only role like the reviewers. It keeps its MCP tools to spot-verify citations. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns an Accepted / Rejected / Backlog list.
+One `delegate_task` call, `target` from the `reflect judgment, divergent, synthesizer` line (default `claudeAgent/claude-opus-5-5 effort=xhigh`), in a read-only role like the reviewers. It keeps its MCP tools to spot-verify citations. Pass `references/synthesizer.md` verbatim, with each reviewer's full output inlined where marked. It returns the merged observations, each with its evidence and classification, and any decision that cannot wait for the round.
 
-## 4. Structural enforcement check
+## 4. Save
 
-Move any Accepted item that a lint rule, script, metadata flag, or runtime check would enforce more reliably to Backlog. See the **encode-lessons-in-structure** principle skill.
+Everything this reflect produced goes in this thread's home in the pstack store. `node ~/.agents/skills/reflect/scripts/retro.mjs reflect <thread-id> --title "<thread title>" --project <project>` creates a folder there for this reflect and prints its path. Write each reviewer's output in it as `judgment.md`, `tooling.md` and `divergent.md`, and the synthesizer's as `synthesis.md`. Then run `retro.mjs register <thread-id> --reflected <that folder>`, adding `--trail <path>` for each decision log or process record this thread kept, and `--model <provider>/<model>@run-<ordinal>` for each model the thread ran on, from the first run on that model in `t3_thread_read`'s `recentRuns` (raise `runLimit` to 50). When the thread has more runs than that, give the earlier changes by date (`@<YYYY-MM-DD>`). The script copies a trail that could vanish into the home and links one that is safe. The store's `retro/` folder is a git repo backed up to the private repo `liminal-ai/pstack-retros`. The script commits and pushes it after each write, so never commit or push it yourself.
 
-## 5. Save
+## 5. Summarize for the user
 
-Everything this reflect produced goes in this thread's home in the pstack store. `node ~/.agents/skills/reflect/scripts/retro.mjs reflect <thread-id> --title "<thread title>" --project <project>` creates a folder there for this reflect and prints its path. Write each reviewer's output in it as `judgment.md`, `tooling.md` and `divergent.md`, the synthesizer's as `synthesis.md`, and the Backlog items as `backlog.md`. Then run `retro.mjs register <thread-id> --reflected <that folder>`, adding `--trail <path>` for each decision log or process record this thread kept. The script copies a trail that could vanish into the home and links one that is safe. The store's `retro/` folder is a git repo backed up to the private repo `liminal-ai/pstack-retros`. The script commits and pushes it after each write, so never commit or push it yourself.
-
-## 6. Apply
-
-Present the synthesizer's full Accepted / Rejected / Backlog output and wait for explicit approval before applying any Accepted edit. The user picks the subset and may redirect routings. Skill changes affect every future agent in the org. Do not auto-apply. Write the user's decisions, in their own words, to `decisions.md` in the reflect's folder.
-
-Backlog items need no approval. They are already in `backlog.md`, so tell the user its path. Nothing files tickets.
-
-Apply each approved edit where the skill's source lives, never only in the installed copy, which a reinstall overwrites. A pstack skill changes through a PR to `liminal-ai/pstack-lim` against `lim`, then a reinstall per that repo's `FORK.md`. pstack-lim does not own a vendor skill or the user's own draft that exists only in `~/.agents/skills`. Name the owner to the user and leave that edit to them.
-
-Follow each approved row's Routing exactly:
-
-- Trivial existing-skill edit (a one-line bullet, a tightened sentence, a stale fact corrected): the parent does it directly.
-- Substantive existing-skill edit (a new section, a new pattern table, more than ~10 lines): hand to Cursor's built-in `create-skill` skill and run its draft / test / iterate loop.
-- `tune description: <skill path>` (the skill exists but didn't trigger when it should have): hand to `create-skill` and run its description-optimization loop.
-- `new skill via create-skill: <kebab-name>`: hand creation to `create-skill`. Do not invent the shape ad hoc.
-
-If your environment ships a SKILL.md validator, run it on every touched skill before declaring done.
-
-## 7. Summarize for the user
-
-Short list, no preamble:
-
-- Edits applied: `<skill path>`. What changed, one line each.
-- New skills created: `<skill path>`. One line each (rare).
-- Saved to `<reflect folder>`. Backlog in its `backlog.md`: `<item title>` (`<tags>`). One line each.
-- Dropped: one line per rejected finding + reason from the synthesizer.
+In a few lines, say what the reflect found and where it is saved (`<reflect folder>`). Raise a decision only when it is a product or ops call that cannot wait for the next round, such as a running service to stop or data at risk. Everything else waits for the round. Propose no skill edits, ask for no approvals, and file nothing.
 
 ## Retro rounds
 
-A retro round reviews several threads' reflects together. `retro.mjs status` writes `REGISTRY.md` in the store's `retro/` folder and says whether a round is due. `retro.mjs open` copies the homes of the threads with waiting reflects into a new round folder, whose `README.md` lists every input. Read them, then write `synthesis.md`, the user's decisions in their own words as `decisions.md`, and `merge-gate.md` on how the merge gate script has done since the last round. `retro.mjs close <round>` refuses until all three exist. Before you close the round, file each backlog item it kept as a Linear backlog issue in team LH, in the project that owns it: "pstack fork", "T3 fork" or "limhealth-next". Search for a matching issue first, and add each issue id to `decisions.md`.
+A retro round reviews several threads' reflects together. `retro.mjs status` writes `REGISTRY.md` in the store's `retro/` folder and says whether a round is due. `retro.mjs open` copies the homes of the threads with waiting reflects into a new round folder, whose `README.md` lists every input. Read them, then write `synthesis.md`, the user's decisions in their own words as `decisions.md`, and `merge-gate.md` on how the merge gate script has done since the last round. The round proposes the changes, and the user approves each one. `retro.mjs close <round>` refuses until all three files exist.
+
+Apply each approved edit where the skill's source lives, never only in the installed copy, which a reinstall overwrites. A pstack skill changes through a PR to `liminal-ai/pstack-lim` against `lim`, then a reinstall per that repo's `FORK.md`. pstack-lim does not own a vendor skill or the user's own draft that exists only in `~/.agents/skills`. Name the owner to the user and leave that edit to them.
+
+Before you close the round, file each follow-up the user kept as a Linear backlog issue in team LH, in the project that owns it: "pstack fork", "T3 fork" or "limhealth-next". Search for a matching issue first, and add each issue id to `decisions.md`.
