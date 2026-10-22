@@ -42,7 +42,7 @@ Installing changes nothing until the user invokes a skill. Only `/setup-pstack`,
 
 If cost is the worry, say where the tokens go and how to spend fewer. pstack spends extra tokens on subagents and review panels. Rerun `/setup-pstack` and pick a smaller budget or cheaper models. A role set to `auto` or `inherit-parent` runs on the chat's model, which saves tokens when the chat runs on Auto or a cheaper model. A shorter panel list runs fewer subagents, one for each entry. Save `/poteto-mode` for work that needs rigor.
 
-This pstack is ported from Cursor to T3 Code. Its workflow skills, including `/poteto-mode`, `/how`, `/why`, and `/teach`, spawn T3 `delegate_task` children with per-role models from the role file, and long runs wake through Claude Code's `/loop` or T3's `schedule_task`.
+This pstack is ported from Cursor to T3 Code. Its workflow skills, including `/poteto-mode`, `/how`, `/why`, and `/teach`, spawn T3 `delegate_task` children with per-role models from the role file, and long runs wake through T3's `schedule_task`.
 
 ## Start a task with `/poteto-mode`
 
@@ -105,7 +105,7 @@ Close calls:
 
 Not in pstack:
 
-- `/loop` is a Claude Code built-in. Other leads wake through T3's `schedule_task`. `/create-skill` is Cursor's built-in, not part of pstack.
+- `/loop` is a Claude Code built-in, and its timer dies when the session restarts, so every pstack lead wakes through T3's `schedule_task` instead. `/create-skill` is Cursor's built-in, not part of pstack.
 - pstack has no `/orchestrate` skill. Orchestrate is a `/poteto-mode` playbook. If the slash menu shows `/orchestrate`, another plugin provides it.
 
 ## Playbooks and principles

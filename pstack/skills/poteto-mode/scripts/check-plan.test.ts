@@ -20,7 +20,7 @@ ${rule}
 ### PR mechanics
 ### Verdict and merge
 ### Boot recipe
-\`git show origin/lim:\` /loop 1h status message
+\`git show origin/lim:\` \`schedule_task\` status message
 
 ## PR 1
 **Depends on.** None.
