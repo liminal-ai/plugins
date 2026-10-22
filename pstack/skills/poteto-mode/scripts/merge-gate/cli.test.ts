@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "./cli.ts";
+import type { IssueComment } from "./gate.ts";
 import {
   type FakeOptions,
   type Repos,
@@ -388,6 +389,136 @@ describe("merge-gate", () => {
       });
       expect(result.exit).toBe(1);
       expect(verdictLine(result.out)).toContain("could not be fetched");
+    });
+  });
+
+  describe("plan boxes", () => {
+    const plan = join(import.meta.dir, "fixtures", "gc2-plan.md");
+    const planFlags = ["--check", "--plan", plan, "--plan-pr", "GC2"];
+    const GC2_IDS = [
+      ...[1, 2, 3, 4, 5].map((n) => `unit-${n}`),
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => `live-${n}`),
+      "perf",
+    ];
+    const verdictWith = (boxLines: readonly string[]) =>
+      comment(
+        `pstack-verdict: PASS+NOTES head=${repos.head} base=${repos.main} by=codex/gpt-6.1-sol\n\n${boxLines.join("\n")}\n\nFindings below.`
+      );
+    const allDone = () => GC2_IDS.map((id) => `box ${id}: done`);
+    const planGate = (comments: readonly IssueComment[], flags = planFlags) =>
+      gate({ comments: [...comments, codexComment(repos.head)] }, flags);
+
+    it("refuses GC2's real PASS+NOTES verdict, which lists none of the plan's boxes", async () => {
+      const body = readFileSync(
+        join(import.meta.dir, "fixtures", "gc2-verdict.md"),
+        "utf8"
+      );
+      const result = await planGate([comment(body)]);
+      expect(result.exit).toBe(1);
+      const line = result.missing.find((l) => l.startsWith("missing: Plan boxes."));
+      expect(line).toContain("The verdict omits 16 required boxes of GC2");
+      expect(result.out).toContain(`  omitted: ${GC2_IDS.join(" ")}`);
+    });
+
+    it("would merge when the verdict lists every required box", async () => {
+      const result = await planGate([verdictWith(allDone())]);
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed)"
+      );
+    });
+
+    it("reads box lines written as a list or in bold", async () => {
+      const lines = allDone().map((line, i) =>
+        i % 2 === 0 ? `- ${line}` : `**${line}**`
+      );
+      expect((await planGate([verdictWith(lines)])).exit).toBe(0);
+    });
+
+    it("refuses a verdict that omits one box", async () => {
+      const result = await planGate([
+        verdictWith(allDone().filter((line) => !line.includes("live-7"))),
+      ]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  omitted: live-7");
+    });
+
+    it("refuses a skip until the lead signs it in its own comment", async () => {
+      const lines = allDone().map((line) =>
+        line === "box perf: done"
+          ? "box perf: skipped. Trunk lacks the feature, so no comparison ran."
+          : line
+      );
+      const unsigned = await planGate([verdictWith(lines)]);
+      expect(unsigned.exit).toBe(1);
+      expect(unsigned.out).toContain("  unsigned skip: perf");
+
+      const selfSigned = await planGate([
+        verdictWith([
+          ...lines,
+          "pstack-skip: perf by=codex/gpt-6.1-sol the verifier cannot accept its own skip",
+        ]),
+      ]);
+      expect(selfSigned.exit).toBe(1);
+
+      const signed = await planGate([
+        verdictWith(lines),
+        comment(
+          "pstack-skip: perf by=claudeAgent/claude-opus-5-5 GC4 measures the same path against trunk."
+        ),
+      ]);
+      expect(signed.exit).toBe(0);
+      expect(signed.out).toContain("1 skip signed by the lead");
+    });
+
+    it("ignores a skip signed by someone with no role in the repo", async () => {
+      const lines = allDone().map((line) =>
+        line === "box perf: done" ? "box perf: skipped. Not run." : line
+      );
+      const result = await planGate([
+        verdictWith(lines),
+        comment("pstack-skip: perf by=someone reasons", "drive-by", false, "NONE"),
+      ]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  unsigned skip: perf");
+    });
+
+    it("refuses n/a without a reason and a box line it cannot read", async () => {
+      const lines = allDone().map((line) =>
+        line === "box live-3: done"
+          ? "box live-3: n/a"
+          : line === "box live-4: done"
+            ? "box live-4: passed"
+            : line
+      );
+      const result = await planGate([verdictWith(lines)]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  no reason: live-3");
+      expect(result.out).toContain("  unread: box live-4: passed");
+    });
+
+    it("checks skips even with no plan given", async () => {
+      const result = await planGate(
+        [verdictWith(["box perf: skipped. Not run."])],
+        ["--check"]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  unsigned skip: perf");
+      expect((await planGate([verdictWith([])], ["--check"])).out).toContain(
+        "met: Plan boxes (no plan given, 0 boxes listed)"
+      );
+    });
+
+    it("exits 2 when the plan has no section for the PR id, or --plan comes alone", async () => {
+      const unknown = await planGate(
+        [verdictWith(allDone())],
+        ["--check", "--plan", plan, "--plan-pr", "GC9"]
+      );
+      expect(unknown.exit).toBe(2);
+      expect(unknown.out).toContain('has no section whose title ends with "(GC9)"');
+      const alone = await planGate([verdictWith(allDone())], ["--check", "--plan", plan]);
+      expect(alone.exit).toBe(2);
+      expect(alone.out).toContain("--plan and --plan-pr go together");
     });
   });
 

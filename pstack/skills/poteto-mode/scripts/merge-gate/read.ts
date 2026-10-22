@@ -1,11 +1,14 @@
 import {
   type Facts,
   type HashResult,
+  type PlanBoxes,
   type PrRef,
   type VerdictFact,
+  findSignedSkips,
   findVerdictLine,
   hasVerdictLine,
   isInstructionFile,
+  parseBoxLines,
   parseVerdictLine,
   speaksForRepo,
 } from "./gate.ts";
@@ -17,7 +20,8 @@ import type { GitHub } from "./github.ts";
 export async function readFacts(
   github: GitHub,
   git: Git,
-  pr: PrRef
+  pr: PrRef,
+  plan: PlanBoxes | null = null
 ): Promise<Facts> {
   const remote = git.remoteFor(pr);
   const [defaultBranch, pull, comments] = await Promise.all([
@@ -46,6 +50,7 @@ export async function readFacts(
   };
   if (found !== null) {
     const parsed = parseVerdictLine(found.line);
+    const { boxes, unread } = parseBoxLines(found.comment.body);
     verdict =
       parsed === null
         ? { kind: "malformed", line: found.line, url: found.url }
@@ -54,6 +59,8 @@ export async function readFacts(
             ...parsed,
             url: found.url,
             recordedHash: recordedHash(git, remote, parsed.base, parsed.head),
+            boxes,
+            unreadBoxLines: unread,
           };
   }
 
@@ -71,6 +78,8 @@ export async function readFacts(
     mergeBase,
     currentHash,
     verdict,
+    plan,
+    skips: findSignedSkips(comments, found?.comment ?? null),
     instructionFiles:
       instructionPaths.length === 0
         ? null
