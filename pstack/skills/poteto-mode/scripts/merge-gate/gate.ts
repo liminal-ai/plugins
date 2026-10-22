@@ -232,7 +232,7 @@ export function parseBoxLines(body: string): {
   return { boxes, unread };
 }
 
-/** A skip counts only when someone with a role in the repo signs it outside the verdict, because the verifier cannot accept its own skip. */
+/** Skip lines from people with a role in the repo, outside the verdict. The Plan boxes requirement drops any signed by the verifier. */
 export function findSignedSkips(
   comments: readonly IssueComment[],
   verdictComment: IssueComment | null
@@ -432,7 +432,12 @@ const planBoxes: Requirement = {
     const noReason = fact.boxes.filter(
       (box) => box.status !== "done" && box.note === ""
     );
-    const signed = new Set(skips.map((skip) => skip.id));
+    // Every agent posts as the same GitHub account, so only by= tells the lead from the verifier, who cannot accept its own skip.
+    const signed = new Set(
+      skips
+        .filter((skip) => skip.by.toLowerCase() !== fact.by.toLowerCase())
+        .map((skip) => skip.id)
+    );
     const unsigned = fact.boxes.filter(
       (box) => box.status === "skipped" && !signed.has(box.id)
     );
