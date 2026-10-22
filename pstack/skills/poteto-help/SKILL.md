@@ -25,6 +25,7 @@ Check the state that changes the answer, and mention it only when it does:
 
 - A role with no line in the role file (the pstack roles section of `~/lim-v2/AGENTS.md`, mirrored in `~/lim-v2/CLAUDE.md`) uses its skill's default model.
 - No `verify-*` skill or other app harness in the project means agents have no scripted way to drive the app. Mention `/create-verification-skill` when the question is about proving a change works.
+- No formal verification skill in the project means no property is checked past what tests reach. Mention `/create-formal-verification-skill` when the question is about a race, an invariant, or another case tests rarely hit. When one exists and the code it covers changed after the commit it records as last in sync, mention `/maintain-formal-verification-skill` if the question touches that code.
 
 When a role line is missing and it matters, ask whether the user wants to pick that role's model now. It matters when the user is new, the question is about setup or cost, or the answer depends on which models run. Ask at most once per chat. If the need is also unclear, ask both questions together. Offer two choices:
 
@@ -34,7 +35,7 @@ When a role line is missing and it matters, ask whether the user wants to pick t
 ## Get set up
 
 1. Install per user, as a Cursor plugin would be. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` into `~/.agents/skills/<name>` (`rsync -a --delete`, so files the fork dropped go too), symlink each as `~/.claude/skills/<name> -> ../../.agents/skills/<name>`, and copy `pstack/agents` into `~/.agents/agents`. Re-run the same copy after each fork update. A repo's own `.agents/skills` holds only its generated `verify-<app>` skills.
-2. Run [`/setup-pstack`](../setup-pstack/SKILL.md) from a v2 thread. It asks for a reasoning budget, maps a model to each role from `orchestrator_capabilities`, and writes the pstack roles section of the role file (`~/lim-v2/AGENTS.md`, which `~/lim-v2/CLAUDE.md` links to). The file loads into new threads.
+2. Run [`/setup-pstack`](../setup-pstack/SKILL.md) from a v2 thread. It asks for a reasoning budget, maps a model to each role from `orchestrator_capabilities`, and writes the pstack roles section of the role file (`~/lim-v2/AGENTS.md`, which `~/lim-v2/CLAUDE.md` links to). The file loads into new threads. Then it offers once each to generate a verification skill and a formal verification skill for the project, unless the project already has one.
 3. Start a real task with `/poteto-mode`, a goal, and a check that can pass or fail.
 
 Installing changes nothing until the user invokes a skill. Only `/setup-pstack`, `deslop`, `control-ui`, and `control-cli` load from the user's words. The [README](../../README.md) and [guide page 1](../../docs/guide/01-setup.md) have the details. Offer to word their first prompt with them, per [`references/prompting.md`](references/prompting.md).
@@ -78,6 +79,8 @@ The default answer is `/poteto-mode`, which runs most of the others when its ste
 | Hear the last reply again in plain words | [`/bro`](../bro/SKILL.md) |
 | Give agents a scripted way to drive the app and prove behavior | [`/create-verification-skill`](../create-verification-skill/SKILL.md) |
 | Bring a verification skill and its feature map back in line with the app | [`/maintain-verification-skill`](../maintain-verification-skill/SKILL.md) |
+| Formally verify a race, invariant, or other property that tests rarely reach | [`/create-formal-verification-skill`](../create-formal-verification-skill/SKILL.md) |
+| Bring a formal verification back in line after the code it covers changed, and learn whether a failure is drift or a bug | [`/maintain-formal-verification-skill`](../maintain-formal-verification-skill/SKILL.md) |
 | Vet a performance number before reporting or acting on it | [`/benchmark-checklist`](../benchmark-checklist/SKILL.md) |
 | Run a large or cross-cutting change, or one to review after stepping away | [`/figure-it-out`](../figure-it-out/SKILL.md) |
 | Keep a decision log during a run, and review it afterward | [`/show-me-your-work`](../show-me-your-work/SKILL.md) |
