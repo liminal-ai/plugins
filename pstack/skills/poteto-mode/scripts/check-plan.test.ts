@@ -44,16 +44,26 @@ ${Array.from({ length: 10 }, (_, i) => `- [ ] Lane ${i + 1}. Save \`lane-${i + 1
 - [ ] Merge when approved.
 
 ## Close the program
-Close.
+File a ticket for each Owed item. Name each scope cut. Delete the \`schedule_task\`.
 
 ## Appendix Prototype evidence
 Recorded.
+
+## Appendix Later work and scope cuts
+**Scope cuts.**
+None.
+**Decided no.**
+- A mobile layout. No, because the app has no mobile users.
+**Owed.**
+- A retry button.
 `;
 
-const runPlan = (example: string, expectedExit: number) => {
+const runPlan = (example: string, expectedExit: number) => runText(validPlan + example, expectedExit);
+
+const runText = (text: string, expectedExit: number) => {
 	const directory = mkdtempSync(join(tmpdir(), "check-plan-test-"));
 	const file = join(directory, "plan.md");
-	writeFileSync(file, validPlan + example);
+	writeFileSync(file, text);
 	try {
 		const result = spawnSync("node", [checker, file], { encoding: "utf8" });
 		expect(result.status).toBe(expectedExit);
@@ -93,4 +103,40 @@ test("rejects headings and prose outside a proper close", () => {
 test("rejects backtick info strings containing a backtick", () => {
 	const result = runPlan("```markdown `invalid`\n## Example only\n```\n", 1);
 	expect(result.stderr).toContain('"## Example only" after Close the program is not an appendix');
+});
+
+test("prints the verdict box ids of each PR", () => {
+	const result = runPlan("", 0);
+	expect(result.stdout).toContain("verdict boxes: unit-1 live-1 live-2 live-3 live-4 live-5 live-6 live-7 live-8 live-9 live-10 perf\n");
+});
+
+const modelBlock = "**Verify, model.** Run the formal verification skill.\n- [ ] A stopped envelope never starts. Pass when it holds.\n";
+
+test("accepts a Verify, model block after the perf block and gives its boxes ids", () => {
+	const result = runText(validPlan.replace("**Review gate.** None.", `${modelBlock}**Review gate.** None.`), 0);
+	expect(result.stdout).toContain("live-10 perf model-1\n");
+});
+
+test("rejects a Verify, model block out of place or without a box", () => {
+	const early = runText(validPlan.replace("**Verify, perf.**", `${modelBlock}**Verify, perf.**`), 1);
+	expect(early.stderr).toContain("with an optional Verify, model. after Verify, perf.");
+	const empty = runText(validPlan.replace("**Review gate.** None.", "**Verify, model.** Run it.\n**Review gate.** None."), 1);
+	expect(empty.stderr).toContain("Verify, model. has no box");
+});
+
+test("requires the later-work appendix, with a reason for each decided no", () => {
+	const later = validPlan.indexOf("## Appendix Later work");
+	expect(runText(validPlan.slice(0, later), 1).stderr).toContain("Later work and scope cuts");
+	expect(runText(validPlan.replace("No, because the app has no mobile users.", "Not now."), 1).stderr).toContain("a Decided no item gives no reason");
+	expect(runText(validPlan.replace("**Scope cuts.**\nNone.\n", "**Scope cuts.**\n"), 1).stderr).toContain('Scope cuts. lists nothing. Write "None."');
+});
+
+test("requires close-out to read back the owed list, the scope cuts, and the wake", () => {
+	const result = runText(validPlan.replace("File a ticket for each Owed item. Name each scope cut. Delete the `schedule_task`.", "Close."), 1);
+	for (const marker of ["Owed", "scope cut", "schedule_task"]) expect(result.stderr).toContain(`Close the program lacks "${marker}"`);
+});
+
+test("requires the role file's wake mechanism, not a Claude-only loop", () => {
+	const result = runText(validPlan.replace("`schedule_task` status message", "/loop 1h status message"), 1);
+	expect(result.stderr).toContain('Program checklist lacks "schedule_task"');
 });

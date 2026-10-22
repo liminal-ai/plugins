@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import process from "node:process";
+import { planLines, verifyBoxIds } from "./plan-boxes.mjs";
 
 const RULE =
 	"Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.";
@@ -16,6 +17,9 @@ const SUB_BLOCKS = [
 	"Review gate.",
 	"Merge.",
 ];
+const MODEL_BLOCK = "Verify, model.";
+const LATER_WORK = ["Scope cuts.", "Decided no.", "Owed."];
+const CLOSE_MARKERS = ["Owed", "scope cut", "schedule_task"];
 const PROGRAM_H3 = ["Arm the program", "Spawn owners", "PR mechanics", "Verdict and merge", "Boot recipe"];
 const PROGRAM_MARKERS = ["show origin/lim:", "schedule_task", "status message"];
 const HOW_TO_READ_MARKERS = [
@@ -43,33 +47,8 @@ if (raw[0] === "---") {
 	start = raw.indexOf("---", 1) + 1;
 }
 
-const lines = [];
-let fence = null;
-const openingFence = (text) => {
-	const match = text.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-	if (!match || (match[1][0] === "`" && match[2].includes("`"))) return null;
-	return { char: match[1][0], length: match[1].length };
-};
-const closingFence = (text, opening) => {
-	const match = text.match(/^ {0,3}(`+|~+)[ \t]*$/);
-	return Boolean(
-		match &&
-		match[1][0] === opening.char &&
-		match[1].length >= opening.length,
-	);
-};
-for (let i = start; i < raw.length; i++) {
-	const text = raw[i];
-	const n = i + 1;
-	let code = Boolean(fence);
-	if (fence && closingFence(text, fence)) {
-		code = false;
-		fence = null;
-	} else if (!fence) {
-		fence = openingFence(text);
-		code = Boolean(fence);
-	}
-	lines.push({ n, text, code });
+const lines = planLines(raw, start);
+for (const { n, text, code } of lines) {
 	if (code) continue;
 	const prose = text
 		.replace(/`[^`]*`/g, "`")
@@ -131,12 +110,13 @@ for (const pr of prSections) {
 	for (const l of pr.body) {
 		if (l.code) continue;
 		const m = l.text.match(/^\*\*([^*]+)\*\*(.*)$/);
-		if (m && SUB_BLOCKS.includes(m[1])) heads.push({ name: m[1], n: l.n, rest: m[2].trim(), lines: [] });
+		if (m && (SUB_BLOCKS.includes(m[1]) || m[1] === MODEL_BLOCK)) heads.push({ name: m[1], n: l.n, rest: m[2].trim(), lines: [] });
 		else if (heads.length) heads.at(-1).lines.push(l);
 	}
 	const names = heads.map((h) => h.name);
-	if (names.join("|") !== SUB_BLOCKS.join("|")) {
-		fail(pr.n, `${pr.title}: sub-blocks are [${names.join(", ")}], expected [${SUB_BLOCKS.join(", ")}]`);
+	const expected = names.includes(MODEL_BLOCK) ? SUB_BLOCKS.toSpliced(SUB_BLOCKS.indexOf("Review gate."), 0, MODEL_BLOCK) : SUB_BLOCKS;
+	if (names.join("|") !== expected.join("|")) {
+		fail(pr.n, `${pr.title}: sub-blocks are [${names.join(", ")}], expected [${expected.join(", ")}], with an optional ${MODEL_BLOCK} after Verify, perf.`);
 	}
 	const block = (name) => heads.find((h) => h.name === name);
 	const counts = {};
@@ -144,7 +124,7 @@ for (const pr of prSections) {
 
 	const depends = block("Depends on.");
 	if (depends && depends.rest === "") fail(depends.n, `${pr.title}: Depends on names nothing`);
-	for (const name of ["Files.", "Build.", "You see.", "Verify, unit.", "Merge."]) {
+	for (const name of ["Files.", "Build.", "You see.", "Verify, unit.", MODEL_BLOCK, "Merge."]) {
 		const b = block(name);
 		if (b && boxes(b.lines).length === 0) fail(b.n, `${pr.title}: ${name} has no box`);
 	}
@@ -189,6 +169,7 @@ for (const pr of prSections) {
 	const total = boxes(pr.body).length;
 	const cells = SUB_BLOCKS.filter((s) => s !== "Depends on.").map((s) => `${s.replace(/[ ,.]+/g, "-").replace(/-$/, "").toLowerCase()}=${counts[s] ?? 0}`);
 	report.push(`${pr.title}  boxes=${total}  ${cells.join(" ")}`);
+	report.push(`  verdict boxes: ${verifyBoxIds(pr.body).join(" ")}`);
 }
 
 if (closeIndex !== -1) {
@@ -197,6 +178,35 @@ if (closeIndex !== -1) {
 		if (!s.title.startsWith("Appendix")) fail(s.n, `"## ${s.title}" after Close the program is not an appendix`);
 	}
 	if (!tail.some((s) => s.title.includes("Prototype evidence"))) fail(close.n, 'no "## Appendix ... Prototype evidence" section');
+	for (const marker of CLOSE_MARKERS) {
+		if (!bodyText(close).includes(marker)) fail(close.n, `Close the program lacks "${marker}"`);
+	}
+	const later = tail.find((s) => s.title.includes("Later work"));
+	if (!later) fail(close.n, 'no "## Appendix ... Later work and scope cuts" section');
+	else checkLaterWork(later);
+}
+
+function checkLaterWork(section) {
+	const heads = [];
+	for (const l of section.body) {
+		if (l.code) continue;
+		const m = l.text.match(/^\*\*([^*]+)\*\*(.*)$/);
+		if (m && LATER_WORK.includes(m[1])) heads.push({ name: m[1], n: l.n, lines: [] });
+		else if (heads.length) heads.at(-1).lines.push(l);
+	}
+	const names = heads.map((h) => h.name);
+	if (names.join("|") !== LATER_WORK.join("|")) {
+		fail(section.n, `${section.title}: sub-blocks are [${names.join(", ")}], expected [${LATER_WORK.join(", ")}]`);
+	}
+	for (const head of heads) {
+		const items = head.lines.filter((l) => !l.code && /^- /.test(l.text));
+		const none = head.lines.some((l) => !l.code && l.text.trim() === "None.");
+		if (items.length === 0 && !none) fail(head.n, `${section.title}: ${head.name} lists nothing. Write "None." when it is empty`);
+		if (head.name !== "Decided no.") continue;
+		for (const item of items) {
+			if (!item.text.includes("because")) fail(item.n, `${section.title}: a Decided no item gives no reason. Write "No, because <reason>."`);
+		}
+	}
 }
 
 for (const line of report) console.log(line);

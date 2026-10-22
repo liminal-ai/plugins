@@ -12,6 +12,8 @@ Classify each Bugbot thread before acting:
 
 When in doubt, ask. Skipping a noisy code-quality comment is cheap; skipping a real data or security bug is not.
 
+Deferring a real finding to later work is a `dismiss` with a reason. When the PR's plan has a **Verify, model.** block, a deferral that says a race cannot happen carries that model check's result. Review cost, such as another push or another review round, is not by itself a reason to defer. Record the deferral in the plan's later-work appendix, as owed or decided no.
+
 ## Codex reviews
 
 Codex's review bot reviews PRs alongside Bugbot, as a trial of which finds real bugs. Confirm its account name on the first PR it reviews. Triage its threads with the same rubric. Count its passes separately from Bugbot's: `watch-pr` marks only Bugbot threads (`isBugBot`), so count Codex passes from the thread author and the PR's review history, and never add them to Bugbot's pass count. Hold the third-pass dismiss lean for Codex. Note which bot raised each real bug, so the two can be compared after a few PRs.
