@@ -1,23 +1,11 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import process from "node:process";
-import { planLines, verifyBoxIds } from "./plan-boxes.mjs";
+import { MODEL_BLOCK, SUB_BLOCKS, blocks, boxes, planLines, verifyBoxIds } from "./plan-boxes.mjs";
 
 const RULE =
 	"Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.";
 const LANES = /Ten lanes on `[^`<>]+` at the PR head/;
-const SUB_BLOCKS = [
-	"Depends on.",
-	"Files.",
-	"Build.",
-	"You see.",
-	"Verify, unit.",
-	"Verify, live.",
-	"Verify, perf.",
-	"Review gate.",
-	"Merge.",
-];
-const MODEL_BLOCK = "Verify, model.";
 // The template writes this sentence. A plan without it predates the later-work record, so its checks stay as they were.
 const RECORD_OF_DONE = "This plan is the record of done.";
 const LATER_WORK_TITLE = "Appendix. Later work and scope cuts";
@@ -33,7 +21,6 @@ const HOW_TO_READ_MARKERS = [
 	RULE,
 ];
 const PERF_ITEMS = ["Metric.", "Probe.", "Baseline.", "Rule."];
-const BOX = /^\s*- \[[ x]\] (.*)$/;
 
 const file = process.argv[2];
 if (!file) {
@@ -71,7 +58,7 @@ for (const l of lines) {
 }
 const find = (title) => sections.find((s) => s.title === title);
 const bodyText = (s) => s.body.map((l) => l.text).join("\n");
-const boxes = (ls) => ls.filter((l) => !l.code && BOX.test(l.text)).map((l) => ({ n: l.n, text: l.text.match(BOX)[1] }));
+const topBoxes = (ls) => boxes(ls).filter((b) => !b.nested);
 
 const h1 = lines.findIndex((l) => !l.code && l.text.startsWith("# "));
 if (h1 === -1) fail(1, "no H1 title");
@@ -113,13 +100,7 @@ if (prSections.length === 0) fail(1, "no PR sections between Program checklist a
 
 const report = [];
 for (const pr of prSections) {
-	const heads = [];
-	for (const l of pr.body) {
-		if (l.code) continue;
-		const m = l.text.match(/^\*\*([^*]+)\*\*(.*)$/);
-		if (m && (SUB_BLOCKS.includes(m[1]) || m[1] === MODEL_BLOCK)) heads.push({ name: m[1], n: l.n, rest: m[2].trim(), lines: [] });
-		else if (heads.length) heads.at(-1).lines.push(l);
-	}
+	const heads = blocks(pr.body, [...SUB_BLOCKS, MODEL_BLOCK]);
 	const names = heads.map((h) => h.name);
 	const expected = names.includes(MODEL_BLOCK) ? SUB_BLOCKS.toSpliced(SUB_BLOCKS.indexOf("Review gate."), 0, MODEL_BLOCK) : SUB_BLOCKS;
 	if (names.join("|") !== expected.join("|")) {
@@ -133,7 +114,7 @@ for (const pr of prSections) {
 	if (depends && depends.rest === "") fail(depends.n, `${pr.title}: Depends on names nothing`);
 	for (const name of ["Files.", "Build.", "You see.", "Verify, unit.", MODEL_BLOCK, "Merge."]) {
 		const b = block(name);
-		if (b && boxes(b.lines).length === 0) fail(b.n, `${pr.title}: ${name} has no box`);
+		if (b && topBoxes(b.lines).length === 0) fail(b.n, `${pr.title}: ${name} has no box`);
 	}
 	for (const name of ["Verify, unit.", "Verify, live.", "Verify, perf."]) {
 		const b = block(name);
@@ -143,7 +124,7 @@ for (const pr of prSections) {
 	const live = block("Verify, live.");
 	if (live) {
 		if (!LANES.test(live.rest)) fail(live.n, `${pr.title}: Verify, live lacks "Ten lanes on \`<swarm workers model>\` at the PR head" with the model filled in`);
-		const lanes = boxes(live.lines).map((b) => ({ ...b, m: b.text.match(/^Lane (\d+)\. /) }));
+		const lanes = topBoxes(live.lines).map((b) => ({ ...b, m: b.text.match(/^Lane (\d+)\. /) }));
 		const numbers = lanes.filter((b) => b.m).map((b) => Number(b.m[1])).sort((a, b) => a - b);
 		if (numbers.join(",") !== "1,2,3,4,5,6,7,8,9,10") fail(live.n, `${pr.title}: lanes are [${numbers.join(",")}], expected 1 to 10`);
 		for (const lane of lanes) {
@@ -155,13 +136,13 @@ for (const pr of prSections) {
 
 	const perf = block("Verify, perf.");
 	if (perf) {
-		const items = boxes(perf.lines).map((b) => b.text.split(" ")[0]);
+		const items = topBoxes(perf.lines).map((b) => b.text.split(" ")[0]);
 		if (items.join("|") !== PERF_ITEMS.join("|")) fail(perf.n, `${pr.title}: perf boxes are [${items.join(", ")}], expected [${PERF_ITEMS.join(", ")}]`);
 	}
 
 	const gate = block("Review gate.");
 	if (gate) {
-		const gateBoxes = boxes(gate.lines);
+		const gateBoxes = topBoxes(gate.lines);
 		if (gate.rest.startsWith("None.")) {
 			if (gateBoxes.length) fail(gate.n, `${pr.title}: Review gate says None but has boxes`);
 		} else {
@@ -196,13 +177,7 @@ if (closeIndex !== -1) {
 }
 
 function checkLaterWork(section) {
-	const heads = [];
-	for (const l of section.body) {
-		if (l.code) continue;
-		const m = l.text.match(/^\*\*([^*]+)\*\*(.*)$/);
-		if (m && LATER_WORK.includes(m[1])) heads.push({ name: m[1], n: l.n, lines: [] });
-		else if (heads.length) heads.at(-1).lines.push(l);
-	}
+	const heads = blocks(section.body, LATER_WORK);
 	const names = heads.map((h) => h.name);
 	if (names.join("|") !== LATER_WORK.join("|")) {
 		fail(section.n, `${section.title}: sub-blocks are [${names.join(", ")}], expected [${LATER_WORK.join(", ")}]`);
