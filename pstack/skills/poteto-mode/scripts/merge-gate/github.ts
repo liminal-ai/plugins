@@ -32,10 +32,10 @@ export interface MergeReadBack {
 export const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
 
-export type MergeAttempt =
+export type WriteAttempt =
   { readonly ok: true } | { readonly ok: false; readonly detail: string };
 
-/** The GitHub reads and the one write the gate makes. Every call names the repo; gh never picks one. */
+/** The GitHub reads and the two writes the gate makes. Every call names the repo; gh never picks one. */
 export interface GitHub {
   defaultBranch(repo: Repository): Promise<string>;
   usesMergeQueue(repo: Repository, branch: string): Promise<boolean>;
@@ -43,7 +43,8 @@ export interface GitHub {
   checks(repo: Repository, head: string): Promise<readonly HeadCheck[]>;
   openThreads(pr: PrRef): Promise<readonly OpenThread[]>;
   issueComments(pr: PrRef): Promise<readonly IssueComment[]>;
-  merge(pr: PrRef, head: string, method: MergeMethod): Promise<MergeAttempt>;
+  comment(pr: PrRef, body: string): Promise<WriteAttempt>;
+  merge(pr: PrRef, head: string, method: MergeMethod): Promise<WriteAttempt>;
   readBack(pr: PrRef): Promise<MergeReadBack>;
 }
 
@@ -378,11 +379,32 @@ export class GhGitHub implements GitHub {
     );
   }
 
+  async comment(pr: PrRef, body: string): Promise<WriteAttempt> {
+    const result = await run([
+      "gh",
+      "pr",
+      "comment",
+      String(pr.number),
+      "--repo",
+      repoName(pr),
+      "--body",
+      body,
+    ]);
+    if (result.code === 0) return { ok: true };
+    return {
+      ok: false,
+      detail:
+        firstLine(result.stderr) ||
+        firstLine(result.stdout) ||
+        `gh pr comment exited ${result.code}`,
+    };
+  }
+
   async merge(
     pr: PrRef,
     head: string,
     method: MergeMethod
-  ): Promise<MergeAttempt> {
+  ): Promise<WriteAttempt> {
     const result = await run([
       "gh",
       "pr",

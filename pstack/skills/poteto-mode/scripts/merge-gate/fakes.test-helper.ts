@@ -11,7 +11,7 @@ import type {
   PrRef,
   PullRequest,
 } from "./gate.ts";
-import type { GitHub, MergeAttempt, MergeReadBack } from "./github.ts";
+import type { GitHub, WriteAttempt, MergeReadBack } from "./github.ts";
 import type { Runtime } from "./cli.ts";
 
 export const REPO = "owner/repo";
@@ -232,7 +232,8 @@ export interface FakeOptions {
   readonly checks?: readonly HeadCheck[];
   readonly threads?: readonly OpenThread[];
   readonly comments?: readonly IssueComment[];
-  readonly merge?: MergeAttempt;
+  readonly merge?: WriteAttempt;
+  readonly comment?: WriteAttempt;
   readonly readBack?: Partial<MergeReadBack>;
   readonly failOn?: keyof GitHub;
 }
@@ -292,6 +293,10 @@ export function fakeGitHub(
         options.comments ??
         []
       );
+    },
+    async comment(pr, body) {
+      step("comment", pr, `#${pr.number} ${body}`);
+      return options.comment ?? { ok: true };
     },
     async merge(pr, head, method) {
       step("merge", pr, `#${pr.number} ${head} ${method}`);

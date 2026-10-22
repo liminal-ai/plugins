@@ -4,7 +4,7 @@ import {
   type PlanBoxes,
   type PrRef,
   type VerdictFact,
-  findSignedSkips,
+  type Waiver,
   findVerdictLine,
   hasVerdictLine,
   isInstructionFile,
@@ -21,7 +21,8 @@ export async function readFacts(
   github: GitHub,
   git: Git,
   pr: PrRef,
-  plan: PlanBoxes | null = null
+  plan: PlanBoxes | null = null,
+  waivers: readonly Waiver[] = []
 ): Promise<Facts> {
   const remote = git.remoteFor(pr);
   const [defaultBranch, pull, comments] = await Promise.all([
@@ -79,7 +80,7 @@ export async function readFacts(
     currentHash,
     verdict,
     plan,
-    skips: findSignedSkips(comments, found?.comment ?? null),
+    waivers,
     instructionFiles:
       instructionPaths.length === 0
         ? null

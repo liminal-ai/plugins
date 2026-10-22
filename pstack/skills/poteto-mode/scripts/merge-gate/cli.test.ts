@@ -1,6 +1,12 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.ts";
@@ -487,73 +493,145 @@ describe("merge-gate", () => {
       expect(result.out).toContain("  omitted: live-7");
     });
 
-    it("refuses a skip until the lead signs it in its own comment", async () => {
-      const lines = allDone().map((line) =>
+    const perfSkipped = () =>
+      allDone().map((line) =>
         line === "box perf: done"
           ? "box perf: skipped. Trunk lacks the feature, so no comparison ran."
           : line
       );
-      const unsigned = await planGate([verdictWith(lines)]);
-      expect(unsigned.exit).toBe(1);
-      expect(unsigned.out).toContain("  unsigned skip: perf");
+    const waive = (...values: string[]) =>
+      values.flatMap((value) => ["--accept-skip", value]);
 
-      const selfSigned = await planGate([
-        verdictWith([
-          ...lines,
-          "pstack-skip: perf by=codex/gpt-6.1-sol the verifier cannot accept its own skip",
-        ]),
-      ]);
-      expect(selfSigned.exit).toBe(1);
-
-      const signed = await planGate([
-        verdictWith(lines),
-        comment(
-          "pstack-skip: perf by=claudeAgent/claude-opus-5-5 GC4 measures the same path against trunk."
-        ),
-      ]);
-      expect(signed.exit).toBe(0);
-      expect(signed.out).toContain("1 skip signed by the lead");
+    it("refuses a skip the lead has not waived on the gate run", async () => {
+      const result = await planGate([verdictWith(perfSkipped())]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  not waived: perf");
+      expect(result.out).toContain('"--accept-skip <id>=<reason>"');
     });
 
-    it("refuses a skip the verifier signs in a separate comment", async () => {
-      const lines = allDone().map((line) =>
-        line === "box perf: done" ? "box perf: skipped. Not run." : line
+    it("refuses a skip an older verifier's comment signs, when a later verifier skips the same box", async () => {
+      const older = comment(
+        [
+          `pstack-verdict: PASS+NOTES head=${repos.oldHead} base=${repos.c0} by=claudeAgent/claude-opus-5-5`,
+          "pstack-skip: perf by=claudeAgent/claude-opus-5-5 GC4 measures the same path against trunk.",
+        ].join("\n")
       );
-      const result = await planGate([
-        verdictWith(lines),
-        comment(
-          "pstack-skip: perf by=codex/gpt-6.1-sol I am the verifier and accept my own skip."
-        ),
-      ]);
+      const result = await planGate([older, verdictWith(perfSkipped())]);
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("  unsigned skip: perf");
+      expect(result.out).toContain("  not waived: perf");
       expect(result.out).not.toContain("WOULD MERGE");
     });
 
-    it("refuses a skip line with no signer", async () => {
-      const lines = allDone().map((line) =>
-        line === "box perf: done" ? "box perf: skipped. Not run." : line
-      );
-      for (const line of [
-        "pstack-skip: perf the lead accepts this",
-        "pstack-skip: perf by= the lead accepts this",
-      ]) {
-        const result = await planGate([verdictWith(lines), comment(line)]);
+    it("refuses a skip the verifier signs itself, under its own name or the lead's", async () => {
+      const signatures = [
+        "pstack-skip: perf by=codex/gpt-6.1-sol I am the verifier and accept my own skip.",
+        "pstack-skip: perf by=claudeAgent/claude-opus-5-5 I am the verifier, writing as the lead.",
+      ];
+      for (const comments of signatures.flatMap((signature) => [
+        [verdictWith([...perfSkipped(), signature])],
+        [verdictWith(perfSkipped()), comment(signature)],
+      ])) {
+        const result = await planGate(comments);
         expect(result.exit).toBe(1);
-        expect(result.out).toContain("  unsigned skip: perf");
+        expect(result.out).toContain("  not waived: perf");
       }
     });
 
-    it("ignores a skip signed by someone with no role in the repo", async () => {
-      const lines = allDone().map((line) =>
-        line === "box perf: done" ? "box perf: skipped. Not run." : line
+    it("would merge a skip the lead waives with a reason, and logs the waiver", async () => {
+      const result = await planGate(
+        [verdictWith(perfSkipped())],
+        [...planFlags, ...waive("perf=GC4 measures the same path against trunk.")]
       );
-      const result = await planGate([
-        verdictWith(lines),
-        comment("pstack-skip: perf by=someone reasons", "drive-by", false, "NONE"),
-      ]);
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 skip waived by the lead)"
+      );
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(result.log().split("\n")[1]).toEndWith(
+        "\tcheck\twould-merge\t\tperf: GC4 measures the same path against trunk."
+      );
+    });
+
+    it("posts the waivers on the PR before it merges, and logs them", async () => {
+      const verdict = verdictWith(perfSkipped());
+      const result = await planGate(
+        [verdict],
+        ["--plan", plan, "--plan-pr", "GC2", ...waive("perf=GC4 measures the same path against trunk.")]
+      );
+      expect(result.exit).toBe(0);
+      const posted = result.calls.findIndex((call) => call.startsWith("comment "));
+      expect(result.calls[posted]).toBe(
+        `comment owner/repo#1 merge-gate: the lead waived these skipped boxes of the verdict ${verdict.url} to merge ${repos.head}.\n\n- perf: GC4 measures the same path against trunk.`
+      );
+      expect(posted).toBeLessThan(
+        result.calls.findIndex((call) => call.startsWith("merge "))
+      );
+      expect(result.calls.filter((call) => call.startsWith("comment "))).toHaveLength(1);
+      expect(result.log().split("\n")[1]).toEndWith(
+        "\tmerge\tmerged\t\tperf: GC4 measures the same path against trunk."
+      );
+    });
+
+    it("merges nothing when the waivers cannot be posted", async () => {
+      const result = await gate(
+        {
+          comments: [verdictWith(perfSkipped()), codexComment(repos.head)],
+          comment: { ok: false, detail: "HTTP 502" },
+        },
+        ["--plan", plan, "--plan-pr", "GC2", ...waive("perf=covered by GC4")]
+      );
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("  unsigned skip: perf");
+      expect(result.out).toContain("could not be posted on the PR (HTTP 502)");
+      expect(merged(result.calls)).toBe(false);
+    });
+
+    it("merges nothing when the verdict at merge time no longer skips a waived box", async () => {
+      const result = await gate(
+        {
+          comments: [verdictWith(perfSkipped()), codexComment(repos.head)],
+          atMerge: {
+            comments: [verdictWith(allDone()), codexComment(repos.head)],
+          },
+        },
+        ["--plan", plan, "--plan-pr", "GC2", ...waive("perf=covered by GC4")]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("does not skip box perf");
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(merged(result.calls)).toBe(false);
+    });
+
+    it("exits 2 on an --accept-skip with no reason, a bad id, or a box waived twice", async () => {
+      for (const [values, text] of [
+        [["perf="], "box perf needs a reason"],
+        [["perf=   "], "box perf needs a reason"],
+        [["perf"], "box perf needs a reason"],
+        [["Perf=reason"], '"Perf" is not a box id'],
+        [["perf=one", "perf=two"], "box perf is waived more than once"],
+      ] as const) {
+        const result = await planGate(
+          [verdictWith(perfSkipped())],
+          [...planFlags, ...waive(...values)]
+        );
+        expect(result.exit).toBe(2);
+        expect(result.out).toContain(text);
+        expect(merged(result.calls)).toBe(false);
+      }
+    });
+
+    it("exits 2 on an --accept-skip for a box the verdict did not skip", async () => {
+      for (const flags of [planFlags, ["--plan", plan, "--plan-pr", "GC2"]]) {
+        const result = await planGate(
+          [verdictWith(perfSkipped())],
+          [...flags, ...waive("perf=covered by GC4", "live-1=not needed")]
+        );
+        expect(result.exit).toBe(2);
+        expect(result.out).toContain("does not skip box live-1");
+        expect(result.out).not.toContain("box perf");
+        expect(merged(result.calls)).toBe(false);
+        expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+        expect(result.log()).toContain("\terror\tusage: --accept-skip live-1: the verdict");
+      }
     });
 
     it("refuses n/a without a reason and a box line it cannot read", async () => {
@@ -576,7 +654,7 @@ describe("merge-gate", () => {
         ["--check"]
       );
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("  unsigned skip: perf");
+      expect(result.out).toContain("  not waived: perf");
       expect((await planGate([verdictWith([])], ["--check"])).out).toContain(
         "met: Plan boxes (no plan given, 0 boxes listed)"
       );
@@ -936,10 +1014,26 @@ describe("merge-gate", () => {
   it("logs every run to runs.tsv with a header", async () => {
     const result = await gate({ checks: [failing("build")], threads: [] });
     expect(result.log().split("\n")).toEqual([
-      "ts\trepo\tpr\thead\tmode\toutcome\tmissing",
-      `2026-10-17T12:00:00.000Z\towner/repo\t1\t${repos.head}\tcheck\trefused\tChecks`,
+      "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived",
+      `2026-10-17T12:00:00.000Z\towner/repo\t1\t${repos.head}\tcheck\trefused\tChecks\t`,
       "",
     ]);
+  });
+
+  it("adds the waived column to a run log written before it", async () => {
+    const github = fakeGitHub({ comments: approvals(), pull: { headRefOid: repos.head } });
+    const runtime = runtimeFor(github, repos.gate);
+    const file = join(runtime.store, "merge-gate", "runs.tsv");
+    const old = "2026-10-01T00:00:00.000Z\towner/repo\t1\tabc\tcheck\trefused\tChecks\n";
+    mkdirSync(join(runtime.store, "merge-gate"));
+    writeFileSync(file, `ts\trepo\tpr\thead\tmode\toutcome\tmissing\n${old}`);
+    await main(["--repo", REPO, "--pr", "1", "--check"], runtime);
+    const rows = readFileSync(file, "utf8").split("\n");
+    expect(rows.slice(0, 2)).toEqual([
+      "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived",
+      old.trimEnd(),
+    ]);
+    expect(rows[2]).toEndWith("\tcheck\twould-merge\t\t");
   });
 
   it("logs a passing --check as would-merge, not merged", async () => {
@@ -985,6 +1079,7 @@ describe("merge-gate", () => {
         "check",
         "error",
         "usage: unknown option '--badflag'",
+        "",
       ],
       [
         "",
@@ -993,6 +1088,7 @@ describe("merge-gate", () => {
         "merge",
         "error",
         expect.stringMatching(/^usage: .*--pr/),
+        "",
       ],
     ]);
   });

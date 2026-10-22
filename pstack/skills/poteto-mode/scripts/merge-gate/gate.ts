@@ -75,11 +75,10 @@ export interface VerdictBox {
   readonly note: string;
 }
 
-/** The lead's `pstack-skip: <id> by=<model> <reason>` line, which accepts a skipped box. */
-export interface SignedSkip {
+/** A skipped box the lead accepts, given as `--accept-skip <id>=<reason>` on the run that merges. */
+export interface Waiver {
   readonly id: string;
-  readonly by: string;
-  readonly url: string;
+  readonly reason: string;
 }
 
 /** The required verify boxes of the PR's section in its plan, as check-plan.mjs names them. */
@@ -122,7 +121,7 @@ export interface Facts {
   readonly currentHash: HashResult;
   readonly verdict: VerdictFact;
   readonly plan: PlanBoxes | null;
-  readonly skips: readonly SignedSkip[];
+  readonly waivers: readonly Waiver[];
   readonly instructionFiles: InstructionFiles | null;
 }
 
@@ -147,9 +146,9 @@ export interface Evaluation {
 const VERDICT_PREFIX = "pstack-verdict:";
 const VERDICT_LINE =
   /^pstack-verdict: (PASS\+NOTES|PASS|FAIL) head=([0-9a-f]{40}) base=([0-9a-f]{40}) by=(\S+)$/;
+export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
 const BOX_LINE = /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped)(?:\. (.*))?$/;
 const BOX_PREFIX = /^(?:[-*] )?box /;
-const SKIP_LINE = /^pstack-skip: ([a-z]+(?:-\d+)?) by=(\S+) (\S.*)$/;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
 const APPROVED_IN = /^approved-in: \S+$/;
 const CODEX_LOGINS = new Set([
@@ -203,13 +202,12 @@ export function findVerdictLine(comments: readonly IssueComment[]): {
   readonly line: string;
   readonly below: readonly string[];
   readonly url: string;
-  readonly comment: IssueComment;
 } | null {
   for (const comment of [...comments].sort(newestFirst)) {
     const all = lines(comment.body);
     const at = all.findLastIndex((line) => line.startsWith(VERDICT_PREFIX));
     if (at !== -1)
-      return { line: all[at], below: all.slice(at + 1), url: comment.url, comment };
+      return { line: all[at], below: all.slice(at + 1), url: comment.url };
   }
   return null;
 }
@@ -235,25 +233,20 @@ export function parseBoxLines(below: readonly string[]): {
   return { boxes, unread };
 }
 
-/** Skip lines from people with a role in the repo, outside the verdict. The Plan boxes requirement drops any signed by the verifier. */
-export function findSignedSkips(
-  comments: readonly IssueComment[],
-  verdictComment: IssueComment | null
-): SignedSkip[] {
-  return comments
-    .filter(
-      (comment) =>
-        !comment.isBot &&
-        speaksForRepo(comment) &&
-        comment.id !== verdictComment?.id
-    )
-    .flatMap((comment) =>
-      lines(comment.body).flatMap((line) => {
-        const match = SKIP_LINE.exec(line);
-        return match === null
-          ? []
-          : [{ id: match[1], by: match[2], url: comment.url }];
-      })
+/** Each waiver that names a box the verdict did not skip; the run that gave it is a usage error. */
+export function strayWaivers(
+  verdict: VerdictFact,
+  waivers: readonly Waiver[]
+): string[] {
+  if (verdict.kind !== "found") return [];
+  const skipped = new Set(
+    verdict.boxes.filter((box) => box.status === "skipped").map((box) => box.id)
+  );
+  return waivers
+    .filter((waiver) => !skipped.has(waiver.id))
+    .map(
+      (waiver) =>
+        `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
     );
 }
 
@@ -427,7 +420,7 @@ const BOX_FORMS =
 
 const planBoxes: Requirement = {
   name: "Plan boxes",
-  evaluate({ verdict: fact, plan, skips }) {
+  evaluate({ verdict: fact, plan, waivers }) {
     if (fact.kind !== "found")
       return met("no verdict to read; see Independent verdict");
     const listed = new Set(fact.boxes.map((box) => box.id));
@@ -438,14 +431,10 @@ const planBoxes: Requirement = {
     const noReason = fact.boxes.filter(
       (box) => box.status !== "done" && box.note === ""
     );
-    // Every agent posts as the same GitHub account, so only by= tells the lead from the verifier, who cannot accept its own skip.
-    const signed = new Set(
-      skips
-        .filter((skip) => skip.by.toLowerCase() !== fact.by.toLowerCase())
-        .map((skip) => skip.id)
-    );
-    const unsigned = fact.boxes.filter(
-      (box) => box.status === "skipped" && !signed.has(box.id)
+    // Every agent posts as the same GitHub account, so no comment can say the lead accepted a skip; only the lead's own gate run can.
+    const waived = new Set(waivers.map((waiver) => waiver.id));
+    const unwaived = fact.boxes.filter(
+      (box) => box.status === "skipped" && !waived.has(box.id)
     );
     const parts: string[] = [];
     const details: string[] = [];
@@ -473,11 +462,11 @@ const planBoxes: Requirement = {
       );
       details.push(`no reason: ${noReason.map((box) => box.id).join(" ")}`);
     }
-    if (unsigned.length > 0) {
+    if (unwaived.length > 0) {
       parts.push(
-        `${unsigned.length} skipped box${unsigned.length === 1 ? " has" : "es have"} no signed reason from the lead, so the verdict is not a pass. Run the box and get a new verdict, or, if the lead accepts the skip, the lead posts "pstack-skip: <id> by=<model> <reason>" on the PR`
+        `${unwaived.length} skipped box${unwaived.length === 1 ? " is" : "es are"} not waived by the lead, so the verdict is not a pass. Run the box and get a new verdict, or, if the lead accepts the skip, the lead runs the gate with "--accept-skip <id>=<reason>"`
       );
-      details.push(`unsigned skip: ${unsigned.map((box) => box.id).join(" ")}`);
+      details.push(`not waived: ${unwaived.map((box) => box.id).join(" ")}`);
     }
     if (parts.length > 0)
       return unmet(`${parts.join(". ")}. (${fact.url})`, details);
@@ -486,7 +475,7 @@ const planBoxes: Requirement = {
       plan === null
         ? `no plan given, ${fact.boxes.length} box${fact.boxes.length === 1 ? "" : "es"} listed`
         : `all ${plan.ids.length} required boxes of ${plan.pr} listed`;
-    return met(skipped === 0 ? scope : `${scope}, ${skipped} skip${skipped === 1 ? "" : "s"} signed by the lead`);
+    return met(skipped === 0 ? scope : `${scope}, ${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`);
   },
 };
 
