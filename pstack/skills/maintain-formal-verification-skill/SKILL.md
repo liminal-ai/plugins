@@ -20,7 +20,7 @@ A check can be both updated and bug: the update makes the verification describe 
 
 ## Edit scope
 
-Edit only the verification: models, harnesses, property files, and the verify skill itself. Never edit product code during a run, unless the user asks you to. When a property fails on the current code, do not weaken the property or the model to make it pass. Report the failure.
+Edit only the verification: models, harnesses, property files, and the verify skill itself. Never edit product code during a run, unless the user asks you to. The one exception is the temporary break in step 5's negative control, which you revert before the run ends. When a property fails on the current code, do not weaken the property or the model to make it pass. Report the failure.
 
 ## Pass
 
