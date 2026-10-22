@@ -9,10 +9,10 @@ A formal check proves a property of what it describes. When the code changes and
 
 ## Outcomes
 
-Give each check one outcome, and say which:
+Give each check one outcome, and say which. The one combination is updated and bug, below:
 
 - **in sync**: no change since the last sync alters what the check describes, and the check passes.
-- **updated**: the code changed, the verification now describes the new code, and the check passes.
+- **updated**: the code changed, and the verification now describes the new code. It passes, unless it is also a bug.
 - **bug**: the verification describes the current code, and the code breaks the property. This is a finding about the code. It is not drift.
 - **blocked**: the check could not be brought back in line or could not run. Say exactly why.
 
