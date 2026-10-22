@@ -53,7 +53,7 @@ const BACKUP_BRANCH = "main";
 // The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
 const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
 
-// Checked on every commit, with gitleaks too when it is installed. Each pattern is specific enough not to match ordinary prose.
+// Checked on every commit, with gitleaks too. Each pattern is specific enough not to match ordinary prose.
 const SECRET_PATTERNS = [
   ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
@@ -445,12 +445,23 @@ function backupState() {
   }
 }
 
-// Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
-const hasGitleaks = () => spawnSync("gitleaks", ["version"], { encoding: "utf-8" }).error?.code !== "ENOENT";
+const runs = (cmd) => spawnSync(cmd, ["version"], { encoding: "utf-8" }).error === undefined;
 
-function gitleaksHits(range) {
+// $GITLEAKS_PATH if set, else PATH, else the newest install under ~/lim/service/gitleaks, which is not on PATH.
+function findGitleaks() {
+  const named = process.env.GITLEAKS_PATH;
+  if (named) return runs(named) ? { cmd: named } : { error: `GITLEAKS_PATH=${named} does not run` };
+  if (runs("gitleaks")) return { cmd: "gitleaks" };
+  const installs = join(homedir(), "lim", "service", "gitleaks");
+  const versions = existsSync(installs) ? readdirSync(installs).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })) : [];
+  const installed = versions.map((v) => join(installs, v, "bin", "gitleaks")).find(runs);
+  return installed ? { cmd: installed } : { error: `gitleaks not found in $GITLEAKS_PATH, on PATH, or at ${installs}/*/bin/gitleaks` };
+}
+
+// Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
+function gitleaksHits(gitleaks, range) {
   const leaks = spawnSync(
-    "gitleaks",
+    gitleaks,
     ["git", "--log-opts", range.join(" "), "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
     { encoding: "utf-8" },
   );
@@ -463,8 +474,8 @@ function gitleaksHits(range) {
 
 // Reads the added lines of every commit in range, the content a push of that range sends.
 // --text shows files git would call binary, such as a log with a NUL byte; --no-renames shows a moved file in full.
-function scanCommits(range) {
-  const hits = new Map(gitleaksHits(range).map((x) => [`${x.file}\0${x.pattern}`, x]));
+function scanCommits(gitleaks, range) {
+  const hits = new Map(gitleaksHits(gitleaks, range).map((x) => [`${x.file}\0${x.pattern}`, x]));
   let file = null;
   let header = false;
   const log = git("-c", "core.quotePath=false", "log", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "--format=", ...range);
@@ -517,8 +528,9 @@ function save(message) {
   const range = [head, "--not", "--remotes=origin"];
   const unpushed = git("rev-list", "--count", ...range);
   const pending = unpushed.status !== 0 || unpushed.stdout.trim() !== "0";
-  if (pending && !hasGitleaks()) return backupFailed(prior, "scan", { stderr: "gitleaks is not on PATH, so the commits cannot be scanned for secrets. Install gitleaks" });
-  const state = { ...prior, secrets: pending ? scanCommits(range) : [] };
+  const scanner = pending ? findGitleaks() : {};
+  if (scanner.error) return backupFailed(prior, "scan", { stderr: `${scanner.error}, so the commits cannot be scanned for secrets. Install gitleaks or set GITLEAKS_PATH` });
+  const state = { ...prior, secrets: pending ? scanCommits(scanner.cmd, range) : [] };
   writeJson(BACKUP_STATE, state);
   if (state.secrets.length) {
     refreshRegistry(state);
