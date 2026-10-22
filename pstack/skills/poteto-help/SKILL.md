@@ -42,7 +42,7 @@ Installing changes nothing until the user invokes a skill. Only `/setup-pstack`,
 
 If cost is the worry, say where the tokens go and how to spend fewer. pstack spends extra tokens on subagents and review panels. Rerun `/setup-pstack` and pick a smaller budget or cheaper models. A role set to `auto` or `inherit-parent` runs on the chat's model, which saves tokens when the chat runs on Auto or a cheaper model. A shorter panel list runs fewer subagents, one for each entry. Save `/poteto-mode` for work that needs rigor.
 
-This pstack is ported from Cursor to T3 Code. Its workflow skills, including `/poteto-mode`, `/how`, `/why`, and `/teach`, spawn T3 `delegate_task` children with per-role models from the role file, and long runs wake through Claude Code's `/loop` or T3's `schedule_task`.
+This pstack is ported from Cursor to T3 Code. Its workflow skills, including `/poteto-mode`, `/how`, `/why`, and `/teach`, spawn T3 `delegate_task` children with per-role models from the role file, and long runs wake through T3's `schedule_task`.
 
 ## Start a task with `/poteto-mode`
 
@@ -87,7 +87,7 @@ The default answer is `/poteto-mode`, which runs most of the others when its ste
 | Pick a model for each role and a reasoning budget | The role file in `~/lim-v2/AGENTS.md` |
 | Turn their own working habits into a personal mode skill | [`/automate-me`](../automate-me/SKILL.md) |
 | Pick a model for each role and a reasoning budget | [`/setup-pstack`](../setup-pstack/SKILL.md) |
-| Turn what a finished task taught into skill edits | [`/reflect`](../reflect/SKILL.md) |
+| Record what happened in a finished task, with evidence, for the next retro round | [`/reflect`](../reflect/SKILL.md) |
 | Stop agents from repeating the same mistakes in this repo | [`/correct`](../correct/SKILL.md) |
 | Build a page whose buttons wake a T3 thread over a webhook | [`/make-bot-ui`](../make-bot-ui/SKILL.md) |
 | Find their way around pstack | `/poteto-help` |
@@ -105,7 +105,7 @@ Close calls:
 
 Not in pstack:
 
-- `/loop` is a Claude Code built-in. Other leads wake through T3's `schedule_task`. `/create-skill` is Cursor's built-in, not part of pstack.
+- `/loop` is a Claude Code built-in, and its timer dies when the session restarts, so every pstack lead wakes through T3's `schedule_task` instead. `/create-skill` is Cursor's built-in, not part of pstack.
 - pstack has no `/orchestrate` skill. Orchestrate is a `/poteto-mode` playbook. If the slash menu shows `/orchestrate`, another plugin provides it.
 
 ## Playbooks and principles
@@ -143,7 +143,7 @@ For a run that drifts, [`references/prompting.md`](references/prompting.md) has 
 ## Make pstack my own
 
 - [`/automate-me`](../automate-me/SKILL.md) drafts a personal mode skill from the user's own history, to use alongside `/poteto-mode`.
-- [`/reflect`](../reflect/SKILL.md) after a session turns its lessons into skill edits the user approves.
+- [`/reflect`](../reflect/SKILL.md) after a session records what happened. A retro round then proposes the skill edits the user approves.
 - `/poteto-mode write a skill for <workflow>` runs the authoring playbook. The eval playbook tests a skill change blind.
 - Fix a misbehaving skill in its own PR, not inside the feature work where it went wrong.
 

@@ -1,8 +1,16 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.ts";
+import type { IssueComment } from "./gate.ts";
 import {
   type FakeOptions,
   type Repos,
@@ -391,6 +399,280 @@ describe("merge-gate", () => {
     });
   });
 
+  describe("plan boxes", () => {
+    const plan = join(import.meta.dir, "fixtures", "gc2-plan.md");
+    const planFlags = ["--check", "--plan", plan, "--plan-pr", "GC2"];
+    const GC2_IDS = [
+      ...[1, 2, 3, 4, 5].map((n) => `unit-${n}`),
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => `live-${n}`),
+      "perf",
+    ];
+    const verdictWith = (boxLines: readonly string[]) =>
+      comment(
+        `pstack-verdict: PASS+NOTES head=${repos.head} base=${repos.main} by=codex/gpt-6.1-sol\n\n${boxLines.join("\n")}\n\nFindings below.`
+      );
+    const allDone = () => GC2_IDS.map((id) => `box ${id}: done`);
+    const planGate = (comments: readonly IssueComment[], flags = planFlags) =>
+      gate({ comments: [...comments, codexComment(repos.head)] }, flags);
+
+    it("refuses GC2's real PASS+NOTES verdict, which lists none of the plan's boxes", async () => {
+      const body = readFileSync(
+        join(import.meta.dir, "fixtures", "gc2-verdict.md"),
+        "utf8"
+      );
+      const result = await planGate([comment(body)]);
+      expect(result.exit).toBe(1);
+      const line = result.missing.find((l) => l.startsWith("missing: Plan boxes."));
+      expect(line).toContain("The verdict omits 16 required boxes of GC2");
+      expect(result.out).toContain(`  omitted: ${GC2_IDS.join(" ")}`);
+    });
+
+    it("would merge when the verdict lists every required box", async () => {
+      const result = await planGate([verdictWith(allDone())]);
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed)"
+      );
+    });
+
+    it("reads box lines written as a list or in bold", async () => {
+      const lines = allDone().map((line, i) =>
+        i % 2 === 0 ? `- ${line}` : `**${line}**`
+      );
+      expect((await planGate([verdictWith(lines)])).exit).toBe(0);
+    });
+
+    it("requires the boxes of lanes indented in the plan", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "merge-gate-plan-"));
+      const indented = join(directory, "plan.md");
+      writeFileSync(
+        indented,
+        readFileSync(plan, "utf8").replaceAll(/^- \[ \] Lane/gm, " - [ ] Lane")
+      );
+      try {
+        const result = await planGate(
+          [verdictWith(allDone().filter((line) => !line.includes("live-")))],
+          ["--check", "--plan", indented, "--plan-pr", "GC2"]
+        );
+        expect(result.exit).toBe(1);
+        expect(result.out).toContain(
+          `  omitted: ${GC2_IDS.filter((id) => id.startsWith("live-")).join(" ")}`
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("reads only the box lines under the verdict line that counts", async () => {
+      const edited = comment(
+        [
+          `pstack-verdict: PASS+NOTES head=${repos.oldHead} base=${repos.c0} by=codex/gpt-6.1-sol`,
+          ...allDone(),
+          `pstack-verdict: PASS+NOTES head=${repos.head} base=${repos.main} by=codex/gpt-6.1-sol`,
+          "Rechecked at the new head.",
+        ].join("\n")
+      );
+      const result = await planGate([edited]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain(`  omitted: ${GC2_IDS.join(" ")}`);
+    });
+
+    it("refuses a box listed more than once", async () => {
+      for (const extra of ["box live-1: n/a. It did not run.", "box live-1: done"]) {
+        const result = await planGate([verdictWith([...allDone(), extra])]);
+        expect(result.exit).toBe(1);
+        expect(result.out).toContain("  listed more than once: live-1");
+      }
+    });
+
+    it("refuses a verdict that omits one box", async () => {
+      const result = await planGate([
+        verdictWith(allDone().filter((line) => !line.includes("live-7"))),
+      ]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  omitted: live-7");
+    });
+
+    const perfSkipped = () =>
+      allDone().map((line) =>
+        line === "box perf: done"
+          ? "box perf: skipped. Trunk lacks the feature, so no comparison ran."
+          : line
+      );
+    const waive = (...values: string[]) =>
+      values.flatMap((value) => ["--accept-skip", value]);
+
+    it("refuses a skip the lead has not waived on the gate run", async () => {
+      const result = await planGate([verdictWith(perfSkipped())]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  not waived: perf");
+      expect(result.out).toContain('"--accept-skip <id>=<reason>"');
+    });
+
+    it("refuses a skip an older verifier's comment signs, when a later verifier skips the same box", async () => {
+      const older = comment(
+        [
+          `pstack-verdict: PASS+NOTES head=${repos.oldHead} base=${repos.c0} by=claudeAgent/claude-opus-5-5`,
+          "pstack-skip: perf by=claudeAgent/claude-opus-5-5 GC4 measures the same path against trunk.",
+        ].join("\n")
+      );
+      const result = await planGate([older, verdictWith(perfSkipped())]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  not waived: perf");
+      expect(result.out).not.toContain("WOULD MERGE");
+    });
+
+    it("refuses a skip the verifier signs itself, under its own name or the lead's", async () => {
+      const signatures = [
+        "pstack-skip: perf by=codex/gpt-6.1-sol I am the verifier and accept my own skip.",
+        "pstack-skip: perf by=claudeAgent/claude-opus-5-5 I am the verifier, writing as the lead.",
+      ];
+      for (const comments of signatures.flatMap((signature) => [
+        [verdictWith([...perfSkipped(), signature])],
+        [verdictWith(perfSkipped()), comment(signature)],
+      ])) {
+        const result = await planGate(comments);
+        expect(result.exit).toBe(1);
+        expect(result.out).toContain("  not waived: perf");
+      }
+    });
+
+    it("would merge a skip the lead waives with a reason, and logs the waiver", async () => {
+      const result = await planGate(
+        [verdictWith(perfSkipped())],
+        [...planFlags, ...waive("perf=GC4 measures the same path against trunk.")]
+      );
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 skip waived by the lead)"
+      );
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(result.log().split("\n")[1]).toEndWith(
+        "\tcheck\twould-merge\t\tperf: GC4 measures the same path against trunk."
+      );
+    });
+
+    it("posts the waivers on the PR before it merges, and logs them", async () => {
+      const verdict = verdictWith(perfSkipped());
+      const result = await planGate(
+        [verdict],
+        ["--plan", plan, "--plan-pr", "GC2", ...waive("perf=GC4 measures the same path against trunk.")]
+      );
+      expect(result.exit).toBe(0);
+      const posted = result.calls.findIndex((call) => call.startsWith("comment "));
+      expect(result.calls[posted]).toBe(
+        `comment owner/repo#1 merge-gate: the lead waived these skipped boxes of the verdict ${verdict.url} to merge ${repos.head}.\n\n- perf: GC4 measures the same path against trunk.`
+      );
+      expect(posted).toBeLessThan(
+        result.calls.findIndex((call) => call.startsWith("merge "))
+      );
+      expect(result.calls.filter((call) => call.startsWith("comment "))).toHaveLength(1);
+      expect(result.log().split("\n")[1]).toEndWith(
+        "\tmerge\tmerged\t\tperf: GC4 measures the same path against trunk."
+      );
+    });
+
+    it("merges nothing when the waivers cannot be posted", async () => {
+      const result = await gate(
+        {
+          comments: [verdictWith(perfSkipped()), codexComment(repos.head)],
+          comment: { ok: false, detail: "HTTP 502" },
+        },
+        ["--plan", plan, "--plan-pr", "GC2", ...waive("perf=covered by GC4")]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("could not be posted on the PR (HTTP 502)");
+      expect(merged(result.calls)).toBe(false);
+    });
+
+    it("merges nothing when the verdict at merge time no longer skips a waived box", async () => {
+      const result = await gate(
+        {
+          comments: [verdictWith(perfSkipped()), codexComment(repos.head)],
+          atMerge: {
+            comments: [verdictWith(allDone()), codexComment(repos.head)],
+          },
+        },
+        ["--plan", plan, "--plan-pr", "GC2", ...waive("perf=covered by GC4")]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("does not skip box perf");
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(merged(result.calls)).toBe(false);
+    });
+
+    it("exits 2 on an --accept-skip with no reason, a bad id, or a box waived twice", async () => {
+      for (const [values, text] of [
+        [["perf="], "box perf needs a reason"],
+        [["perf=   "], "box perf needs a reason"],
+        [["perf"], "box perf needs a reason"],
+        [["Perf=reason"], '"Perf" is not a box id'],
+        [["perf=one", "perf=two"], "box perf is waived more than once"],
+      ] as const) {
+        const result = await planGate(
+          [verdictWith(perfSkipped())],
+          [...planFlags, ...waive(...values)]
+        );
+        expect(result.exit).toBe(2);
+        expect(result.out).toContain(text);
+        expect(merged(result.calls)).toBe(false);
+      }
+    });
+
+    it("exits 2 on an --accept-skip for a box the verdict did not skip", async () => {
+      for (const flags of [planFlags, ["--plan", plan, "--plan-pr", "GC2"]]) {
+        const result = await planGate(
+          [verdictWith(perfSkipped())],
+          [...flags, ...waive("perf=covered by GC4", "live-1=not needed")]
+        );
+        expect(result.exit).toBe(2);
+        expect(result.out).toContain("does not skip box live-1");
+        expect(result.out).not.toContain("box perf");
+        expect(merged(result.calls)).toBe(false);
+        expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+        expect(result.log()).toContain("\terror\tusage: --accept-skip live-1: the verdict");
+      }
+    });
+
+    it("refuses n/a without a reason and a box line it cannot read", async () => {
+      const lines = allDone().map((line) =>
+        line === "box live-3: done"
+          ? "box live-3: n/a"
+          : line === "box live-4: done"
+            ? "box live-4: passed"
+            : line
+      );
+      const result = await planGate([verdictWith(lines)]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  no reason: live-3");
+      expect(result.out).toContain("  unread: box live-4: passed");
+    });
+
+    it("checks skips even with no plan given", async () => {
+      const result = await planGate(
+        [verdictWith(["box perf: skipped. Not run."])],
+        ["--check"]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  not waived: perf");
+      expect((await planGate([verdictWith([])], ["--check"])).out).toContain(
+        "met: Plan boxes (no plan given, 0 boxes listed)"
+      );
+    });
+
+    it("exits 2 when the plan has no section for the PR id, or --plan comes alone", async () => {
+      const unknown = await planGate(
+        [verdictWith(allDone())],
+        ["--check", "--plan", plan, "--plan-pr", "GC9"]
+      );
+      expect(unknown.exit).toBe(2);
+      expect(unknown.out).toContain('has no section whose title ends with "(GC9)"');
+      const alone = await planGate([verdictWith(allDone())], ["--check", "--plan", plan]);
+      expect(alone.exit).toBe(2);
+      expect(alone.out).toContain("--plan and --plan-pr go together");
+    });
+  });
+
   describe("codex review", () => {
     const ask =
       'Comment "@codex review" on the PR and wait for Codex\'s summary comment to name this head.';
@@ -732,10 +1014,26 @@ describe("merge-gate", () => {
   it("logs every run to runs.tsv with a header", async () => {
     const result = await gate({ checks: [failing("build")], threads: [] });
     expect(result.log().split("\n")).toEqual([
-      "ts\trepo\tpr\thead\tmode\toutcome\tmissing",
-      `2026-10-17T12:00:00.000Z\towner/repo\t1\t${repos.head}\tcheck\trefused\tChecks`,
+      "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived",
+      `2026-10-17T12:00:00.000Z\towner/repo\t1\t${repos.head}\tcheck\trefused\tChecks\t`,
       "",
     ]);
+  });
+
+  it("adds the waived column to a run log written before it", async () => {
+    const github = fakeGitHub({ comments: approvals(), pull: { headRefOid: repos.head } });
+    const runtime = runtimeFor(github, repos.gate);
+    const file = join(runtime.store, "merge-gate", "runs.tsv");
+    const old = "2026-10-01T00:00:00.000Z\towner/repo\t1\tabc\tcheck\trefused\tChecks\n";
+    mkdirSync(join(runtime.store, "merge-gate"));
+    writeFileSync(file, `ts\trepo\tpr\thead\tmode\toutcome\tmissing\n${old}`);
+    await main(["--repo", REPO, "--pr", "1", "--check"], runtime);
+    const rows = readFileSync(file, "utf8").split("\n");
+    expect(rows.slice(0, 2)).toEqual([
+      "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived",
+      old.trimEnd(),
+    ]);
+    expect(rows[2]).toEndWith("\tcheck\twould-merge\t\t");
   });
 
   it("logs a passing --check as would-merge, not merged", async () => {
@@ -781,6 +1079,7 @@ describe("merge-gate", () => {
         "check",
         "error",
         "usage: unknown option '--badflag'",
+        "",
       ],
       [
         "",
@@ -789,6 +1088,7 @@ describe("merge-gate", () => {
         "merge",
         "error",
         expect.stringMatching(/^usage: .*--pr/),
+        "",
       ],
     ]);
   });

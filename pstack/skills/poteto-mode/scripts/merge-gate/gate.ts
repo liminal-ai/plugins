@@ -66,6 +66,28 @@ export interface IgnoredVerdict {
   readonly url: string;
 }
 
+export type BoxStatus = "done" | "n/a" | "skipped";
+
+/** One `box <id>: <status>. <note>` line under a verdict. */
+export interface VerdictBox {
+  readonly id: string;
+  readonly status: BoxStatus;
+  readonly note: string;
+}
+
+/** A skipped box the lead accepts, given as `--accept-skip <id>=<reason>` on the run that merges. */
+export interface Waiver {
+  readonly id: string;
+  readonly reason: string;
+}
+
+/** The required verify boxes of the PR's section in its plan, as check-plan.mjs names them. */
+export interface PlanBoxes {
+  readonly path: string;
+  readonly pr: string;
+  readonly ids: readonly string[];
+}
+
 export type VerdictFact =
   | { readonly kind: "none"; readonly ignored: readonly IgnoredVerdict[] }
   | { readonly kind: "malformed"; readonly line: string; readonly url: string }
@@ -77,6 +99,8 @@ export type VerdictFact =
       readonly by: string;
       readonly url: string;
       readonly recordedHash: HashResult;
+      readonly boxes: readonly VerdictBox[];
+      readonly unreadBoxLines: readonly string[];
     };
 
 export interface InstructionFiles {
@@ -96,6 +120,8 @@ export interface Facts {
   readonly mergeBase: string;
   readonly currentHash: HashResult;
   readonly verdict: VerdictFact;
+  readonly plan: PlanBoxes | null;
+  readonly waivers: readonly Waiver[];
   readonly instructionFiles: InstructionFiles | null;
 }
 
@@ -120,6 +146,9 @@ export interface Evaluation {
 const VERDICT_PREFIX = "pstack-verdict:";
 const VERDICT_LINE =
   /^pstack-verdict: (PASS\+NOTES|PASS|FAIL) head=([0-9a-f]{40}) base=([0-9a-f]{40}) by=(\S+)$/;
+export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
+const BOX_LINE = /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped)(?:\. (.*))?$/;
+const BOX_PREFIX = /^(?:[-*] )?box /;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
 const APPROVED_IN = /^approved-in: \S+$/;
 const CODEX_LOGINS = new Set([
@@ -165,18 +194,60 @@ const isBugbot = (check: HeadCheck): boolean =>
 /** Creation order, not edit time, so editing an old comment never makes it the newest. */
 const newestFirst = (a: IssueComment, b: IssueComment): number => b.id - a.id;
 
-/** The most recent comment with a verdict line decides; its last such line counts. */
-export function findVerdictLine(
-  comments: readonly IssueComment[]
-): { readonly line: string; readonly url: string } | null {
+/**
+ * The most recent comment with a verdict line decides; its last such line counts, with the lines below it.
+ * An edit can leave an older verdict and its boxes above, and those belong to that older verdict.
+ */
+export function findVerdictLine(comments: readonly IssueComment[]): {
+  readonly line: string;
+  readonly below: readonly string[];
+  readonly url: string;
+} | null {
   for (const comment of [...comments].sort(newestFirst)) {
-    const found = lines(comment.body).filter((line) =>
-      line.startsWith(VERDICT_PREFIX)
-    );
-    const last = found[found.length - 1];
-    if (last !== undefined) return { line: last, url: comment.url };
+    const all = lines(comment.body);
+    const at = all.findLastIndex((line) => line.startsWith(VERDICT_PREFIX));
+    if (at !== -1)
+      return { line: all[at], below: all.slice(at + 1), url: comment.url };
   }
   return null;
+}
+
+/** The box lines under a verdict line, and any line that starts like one but does not parse. */
+export function parseBoxLines(below: readonly string[]): {
+  readonly boxes: readonly VerdictBox[];
+  readonly unread: readonly string[];
+} {
+  const boxes: VerdictBox[] = [];
+  const unread: string[] = [];
+  for (const line of below.map(readable)) {
+    if (!BOX_PREFIX.test(line)) continue;
+    const match = BOX_LINE.exec(line);
+    if (match === null) unread.push(line);
+    else
+      boxes.push({
+        id: match[1],
+        status: match[2] as BoxStatus,
+        note: match[3]?.trim() ?? "",
+      });
+  }
+  return { boxes, unread };
+}
+
+/** Each waiver that names a box the verdict did not skip; the run that gave it is a usage error. */
+export function strayWaivers(
+  verdict: VerdictFact,
+  waivers: readonly Waiver[]
+): string[] {
+  if (verdict.kind !== "found") return [];
+  const skipped = new Set(
+    verdict.boxes.filter((box) => box.status === "skipped").map((box) => box.id)
+  );
+  return waivers
+    .filter((waiver) => !skipped.has(waiver.id))
+    .map(
+      (waiver) =>
+        `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
+    );
 }
 
 export function parseVerdictLine(line: string): {
@@ -344,6 +415,70 @@ const verdict: Requirement = {
   },
 };
 
+const BOX_FORMS =
+  '"box <id>: done", "box <id>: n/a. <reason>" or "box <id>: skipped. <what did not run>"';
+
+const planBoxes: Requirement = {
+  name: "Plan boxes",
+  evaluate({ verdict: fact, plan, waivers }) {
+    if (fact.kind !== "found")
+      return met("no verdict to read; see Independent verdict");
+    const listed = new Set(fact.boxes.map((box) => box.id));
+    const repeated = [...listed].filter(
+      (id) => fact.boxes.filter((box) => box.id === id).length > 1
+    );
+    const omitted = (plan?.ids ?? []).filter((id) => !listed.has(id));
+    const noReason = fact.boxes.filter(
+      (box) => box.status !== "done" && box.note === ""
+    );
+    // Every agent posts as the same GitHub account, so no comment can say the lead accepted a skip; only the lead's own gate run can.
+    const waived = new Set(waivers.map((waiver) => waiver.id));
+    const unwaived = fact.boxes.filter(
+      (box) => box.status === "skipped" && !waived.has(box.id)
+    );
+    const parts: string[] = [];
+    const details: string[] = [];
+    if (fact.unreadBoxLines.length > 0) {
+      parts.push(
+        `${fact.unreadBoxLines.length} box line${fact.unreadBoxLines.length === 1 ? " does" : "s do"} not read as ${BOX_FORMS}`
+      );
+      details.push(...fact.unreadBoxLines.map((line) => `unread: ${line}`));
+    }
+    if (repeated.length > 0) {
+      parts.push(
+        `${repeated.length} box${repeated.length === 1 ? " is" : "es are"} listed more than once, so the verdict does not say which status holds. Have the verifier list each box once`
+      );
+      details.push(`listed more than once: ${repeated.join(" ")}`);
+    }
+    if (omitted.length > 0) {
+      parts.push(
+        `The verdict omits ${omitted.length} required box${omitted.length === 1 ? "" : "es"} of ${plan?.pr} in ${plan?.path}. Have the verifier list each one as ${BOX_FORMS}`
+      );
+      details.push(`omitted: ${omitted.join(" ")}`);
+    }
+    if (noReason.length > 0) {
+      parts.push(
+        `${noReason.length} box${noReason.length === 1 ? " is" : "es are"} n/a or skipped with no reason. Have the verifier give one`
+      );
+      details.push(`no reason: ${noReason.map((box) => box.id).join(" ")}`);
+    }
+    if (unwaived.length > 0) {
+      parts.push(
+        `${unwaived.length} skipped box${unwaived.length === 1 ? " is" : "es are"} not waived by the lead, so the verdict is not a pass. Run the box and get a new verdict, or, if the lead accepts the skip, the lead runs the gate with "--accept-skip <id>=<reason>"`
+      );
+      details.push(`not waived: ${unwaived.map((box) => box.id).join(" ")}`);
+    }
+    if (parts.length > 0)
+      return unmet(`${parts.join(". ")}. (${fact.url})`, details);
+    const skipped = fact.boxes.filter((box) => box.status === "skipped").length;
+    const scope =
+      plan === null
+        ? `no plan given, ${fact.boxes.length} box${fact.boxes.length === 1 ? "" : "es"} listed`
+        : `all ${plan.ids.length} required boxes of ${plan.pr} listed`;
+    return met(skipped === 0 ? scope : `${scope}, ${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`);
+  },
+};
+
 const codexReview: Requirement = {
   name: "Codex review",
   evaluate({ comments, pull }) {
@@ -414,6 +549,7 @@ export const REQUIREMENTS: readonly Requirement[] = [
   reviewThreads,
   reviewDecision,
   verdict,
+  planBoxes,
   codexReview,
   instructionApproval,
 ];

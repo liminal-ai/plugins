@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: retro.mjs <command>
   reflect <thread-id> [--title T] [--project P]
-  register <thread-id> [--title T] [--project P] [--trail PATH]... [--reflected DIR]
+  register <thread-id> [--title T] [--project P] [--model PROVIDER/MODEL@FROM]... [--trail PATH]... [--reflected DIR]
   status
   open [--threads ID,ID] [--input PATH]... [--at YYYY-MM-DD] [--earlier REASON]
   close <round> [--at YYYY-MM-DD]
@@ -17,6 +17,8 @@ const USAGE = `usage: retro.mjs <command>
   remind [--answered]`;
 
 const THREAD_ID = /^(mcp:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// FROM is where the model took over: a run ordinal from t3_thread_read's recentRuns, such as run-12, or a date.
+const MODEL = /^([\w.-]+)\/([\w.:-]+)@(run-\d+|\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?)$/;
 const DAY = 24 * 60 * 60 * 1000;
 const DUE_COUNT = 3;
 const DUE_AGE_DAYS = 7;
@@ -51,7 +53,7 @@ const BACKUP_BRANCH = "main";
 // The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
 const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
 
-// Checked on every commit, with gitleaks too when it is installed. Each pattern is specific enough not to match ordinary prose.
+// Checked on every commit, with gitleaks too. Each pattern is specific enough not to match ordinary prose.
 const SECRET_PATTERNS = [
   ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
@@ -294,9 +296,16 @@ function threadRecord(id, args, at) {
     reflects: [],
     trails: [],
   };
+  rec.models ??= [];
   if (problems.length) refuse(problems.join("\n"));
   if (args.title) rec.title = args.title;
   if (args.project) rec.project = args.project;
+  for (const value of args.model) {
+    const m = MODEL.exec(value);
+    if (!m) refuse(`--model takes <provider>/<model>@<from>, where <from> is run-<ordinal> or a date, got ${value}`);
+    const [, provider, model, from] = m;
+    if (!rec.models.some((x) => x.provider === provider && x.model === model && x.from === from)) rec.models.push({ provider, model, from, recorded: stamp(at) });
+  }
   rec.lastRegistered = stamp(at);
   mkdirSync(join(RETRO, id), { recursive: true });
   return { rec, file, home: join(RETRO, id) };
@@ -334,6 +343,10 @@ function currentTrails(t) {
   return [...new Set(t.trails.map((x) => x.source))].map((s) => current(t, s));
 }
 
+function modelsCell(t) {
+  return (t.models ?? []).map((x) => `${x.provider}/${x.model} from ${x.from}`).join("<br>") || "not recorded";
+}
+
 function trailsCell(t) {
   return currentTrails(t).map((x) => `${x.mode}: \`${x.path}\``).join("<br>") || "none";
 }
@@ -358,7 +371,7 @@ function findProblems({ threads, rounds, problems }) {
   return out;
 }
 
-function renderRegistry(state, at, secrets) {
+function renderRegistry(state, at, { secrets, failure }) {
   const { threads, rounds } = state;
   const all = [...threads.values()].sort((a, b) => a.firstRegistered.localeCompare(b.firstRegistered));
   const by = (kind) => all.filter((t) => statusOf(t, rounds).kind === kind);
@@ -378,6 +391,9 @@ function renderRegistry(state, at, secrets) {
           "",
         ]
       : []),
+    ...(failure
+      ? ["## Not backed up: the last backup failed", "", `${failure.step} failed at ${failure.at}: ${failure.error}. The next retro command that writes tries again.`, ""]
+      : []),
     `Generated ${stamp(at)} by \`${SELF} status\`. Do not edit by hand.`,
     "",
     `Round due: ${due.due ? "yes" : "no"}, ${due.reason}.`,
@@ -385,15 +401,15 @@ function renderRegistry(state, at, secrets) {
     "## Waiting for a round",
     "",
     ...table(
-      by("waiting").map((t) => `| ${threadLabel(t)} | ${t.project ?? "?"} | ${pendingReflects(t, rounds).map((c) => `\`${c.dir}\``).join("<br>")} | ${decided(t)} | ${trailsCell(t)} |`),
-      "| thread | project | reflects | decisions | trails |",
+      by("waiting").map((t) => `| ${threadLabel(t)} | ${t.project ?? "?"} | ${modelsCell(t)} | ${pendingReflects(t, rounds).map((c) => `\`${c.dir}\``).join("<br>")} | ${decided(t)} | ${trailsCell(t)} |`),
+      "| thread | project | models | reflects | decisions | trails |",
     ),
     "",
     "## Registered, no reflect yet",
     "",
     ...table(
-      by("no-reflect").map((t) => `| ${threadLabel(t)} | ${t.project ?? "?"} | ${t.firstRegistered.slice(0, 10)} | ${trailsCell(t)} |`),
-      "| thread | project | registered | trails |",
+      by("no-reflect").map((t) => `| ${threadLabel(t)} | ${t.project ?? "?"} | ${modelsCell(t)} | ${t.firstRegistered.slice(0, 10)} | ${trailsCell(t)} |`),
+      "| thread | project | models | registered | trails |",
     ),
     "",
     "## Rounds",
@@ -411,8 +427,8 @@ function renderRegistry(state, at, secrets) {
   return `${lines.join("\n")}\n`;
 }
 
-function refreshRegistry(secrets = backupState().secrets) {
-  const text = renderRegistry(load(), now(), secrets);
+function refreshRegistry(backup = backupState()) {
+  const text = renderRegistry(load(), now(), backup);
   writeAtomic(join(RETRO, "REGISTRY.md"), text);
   return text;
 }
@@ -429,14 +445,27 @@ function backupState() {
   }
 }
 
+const runs = (cmd) => spawnSync(cmd, ["version"], { encoding: "utf-8" }).error === undefined;
+
+// $GITLEAKS_PATH if set, else PATH, else the newest install under ~/lim/service/gitleaks, which is not on PATH.
+function findGitleaks() {
+  const named = process.env.GITLEAKS_PATH;
+  if (named) return runs(named) ? { cmd: named } : { error: `GITLEAKS_PATH=${named} does not run` };
+  if (runs("gitleaks")) return { cmd: "gitleaks" };
+  const installs = join(homedir(), "lim", "service", "gitleaks");
+  const versions = existsSync(installs) ? readdirSync(installs).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })) : [];
+  const installed = versions.map((v) => join(installs, v, "bin", "gitleaks")).find(runs);
+  return installed ? { cmd: installed } : { error: `gitleaks not found in $GITLEAKS_PATH, on PATH, or at ${installs}/*/bin/gitleaks` };
+}
+
 // Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
-function gitleaksHits(range) {
+function gitleaksHits(gitleaks, range) {
   const leaks = spawnSync(
-    "gitleaks",
+    gitleaks,
     ["git", "--log-opts", range.join(" "), "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
     { encoding: "utf-8" },
   );
-  if (leaks.error?.code === "ENOENT" || leaks.status === 0) return [];
+  if (leaks.status === 0) return [];
   try {
     if (leaks.status === 3) return JSON.parse(readFileSync(GITLEAKS_REPORT, "utf-8")).map((f) => ({ file: f.File, pattern: `gitleaks ${f.RuleID}` }));
   } catch {}
@@ -445,8 +474,8 @@ function gitleaksHits(range) {
 
 // Reads the added lines of every commit in range, the content a push of that range sends.
 // --text shows files git would call binary, such as a log with a NUL byte; --no-renames shows a moved file in full.
-function scanCommits(range) {
-  const hits = new Map(gitleaksHits(range).map((x) => [`${x.file}\0${x.pattern}`, x]));
+function scanCommits(gitleaks, range) {
+  const hits = new Map(gitleaksHits(gitleaks, range).map((x) => [`${x.file}\0${x.pattern}`, x]));
   let file = null;
   let header = false;
   const log = git("-c", "core.quotePath=false", "log", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "--format=", ...range);
@@ -466,8 +495,10 @@ const stageAll = () => git("add", "-A", "--force", "--", ".", ...NEVER_BACKED_UP
 
 function backupFailed(state, step, r) {
   const error = (r.stderr || r.error?.message || `exit ${r.status}`).trim().split("\n").at(-1);
-  writeJson(BACKUP_STATE, { ...state, failure: { at: stamp(now()), step, error } });
-  console.error(`warning: retro backup ${step} failed (${error}); the next retro command that writes tries again`);
+  const failed = { ...state, failure: { at: stamp(now()), step, error } };
+  writeJson(BACKUP_STATE, failed);
+  refreshRegistry(failed);
+  console.error(`retro: backup ${step} failed (${error}); nothing new is pushed, and the next retro command that writes tries again`);
 }
 
 // Every write ends here. A backup failure never fails the command: the work stays on disk and the next write retries.
@@ -479,7 +510,7 @@ function save(message) {
     return console.error(`warning: ${RETRO} is not a git repo, so nothing is backed up`);
   }
   const prior = backupState();
-  refreshRegistry([]);
+  refreshRegistry({ secrets: [], failure: null });
   stageAll();
   // A commit held back for a secret would ride along in every later push, so fold the unpushed commits into this one.
   const pushedHead = git("rev-parse", "--verify", "-q", `refs/remotes/origin/${BACKUP_BRANCH}`).stdout.trim();
@@ -496,18 +527,24 @@ function save(message) {
   if (!head) return;
   const range = [head, "--not", "--remotes=origin"];
   const unpushed = git("rev-list", "--count", ...range);
-  const state = { ...prior, secrets: unpushed.status === 0 && unpushed.stdout.trim() === "0" ? [] : scanCommits(range) };
+  const pending = unpushed.status !== 0 || unpushed.stdout.trim() !== "0";
+  const scanner = pending ? findGitleaks() : {};
+  if (scanner.error) return backupFailed(prior, "scan", { stderr: `${scanner.error}, so the commits cannot be scanned for secrets. Install gitleaks or set GITLEAKS_PATH` });
+  const state = { ...prior, secrets: pending ? scanCommits(scanner.cmd, range) : [] };
   writeJson(BACKUP_STATE, state);
   if (state.secrets.length) {
-    refreshRegistry();
+    refreshRegistry(state);
     for (const x of state.secrets) console.error(`retro: possible secret in ${join(RETRO, x.file)} (${x.pattern}); nothing is pushed until it is removed`);
     return;
   }
-  if (unpushed.status !== 0 || unpushed.stdout.trim() !== "0") {
+  if (pending) {
     const push = spawnSync("git", ["-C", RETRO, "push", "-q", "origin", `${head}:refs/heads/${BACKUP_BRANCH}`], { encoding: "utf-8", timeout: PUSH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
     if (push.status !== 0) return backupFailed(state, "push", push);
   }
-  if (state.failure) writeJson(BACKUP_STATE, { ...state, failure: null });
+  if (state.failure) {
+    writeJson(BACKUP_STATE, { ...state, failure: null });
+    refreshRegistry({ ...state, failure: null });
+  }
 }
 
 function cmdStatus() {
@@ -524,7 +561,7 @@ function roundReadme(round, state) {
   for (const id of round.threads) {
     const t = state.threads.get(id);
     const home = join(RETRO, id);
-    lines.push(`## ${threadLabel(t)}`, "", `Project: ${t.project ?? "?"}. Home: \`${home}\`, copied to \`inputs/${id}/\`.`, "");
+    lines.push(`## ${threadLabel(t)}`, "", `Project: ${t.project ?? "?"}. Models: ${modelsCell(t).replaceAll("<br>", ", ")}. Home: \`${home}\`, copied to \`inputs/${id}/\`.`, "");
     for (const dir of round.reflects.filter((d) => within(d, home))) lines.push(`- Reflect: \`inputs/${id}/${relative(home, dir) || "."}\``);
     for (const x of currentTrails(t).filter((x) => x.mode === "linked")) lines.push(`- Linked trail: \`${x.path}\`${x.commit ? ` at ${x.commit.slice(0, 12)}` : ""}`);
     lines.push("");
@@ -646,10 +683,10 @@ function cmdRemind(args) {
 }
 
 const FLAGS = new Set(["all", "answered"]);
-const OPTIONS = new Set(["title", "project", "trail", "threads", "input", "at", "earlier", "reflected"]);
+const OPTIONS = new Set(["title", "project", "model", "trail", "threads", "input", "at", "earlier", "reflected"]);
 
 function parse(argv) {
-  const args = { _: [], trail: [], input: [] };
+  const args = { _: [], trail: [], input: [], model: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith("--")) {

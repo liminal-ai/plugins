@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { main } from "./cli.ts";
 import { type Repos, makeRepos, runtimeFor } from "./fakes.test-helper.ts";
 import { GhGitHub } from "./github.ts";
+import { parsePrNumber } from "../watch-pr/types.ts";
 
 const FAKE_GH = `#!/usr/bin/env bash
 printf '%s\\0' "$@" > "$FAKE_GH_DIR/calls/$(date +%s%N)"
@@ -19,6 +20,7 @@ case "$*" in
   "pr view"*"state,mergedAt,baseRefName,mergeCommit"*) cat "$FAKE_GH_DIR/readback.json" ;;
   "pr view"*) cat "$FAKE_GH_DIR/pr.json" ;;
   "pr merge"*) ;;
+  "pr comment"*) ;;
   "api --paginate"*) cat "$FAKE_GH_DIR/comments.json" ;;
   *HeadChecks*) cat "$FAKE_GH_DIR/checks.json" ;;
   *OpenThreads*) cat "$FAKE_GH_DIR/threads.json" ;;
@@ -225,6 +227,31 @@ it("passes --method merge to gh pr merge with the pinned head", async () => {
       "--merge",
       "--match-head-commit",
       repos.head,
+    ],
+  ]);
+});
+
+it("posts the lead's waivers with gh pr comment naming the repo", async () => {
+  const before = new Set(readdirSync(join(dir, "calls")));
+  const attempt = await new GhGitHub().comment(
+    { owner: "owner", repo: "repo", number: parsePrNumber(1) },
+    "merge-gate: waived\n\n- perf: covered by GC4"
+  );
+  expect(attempt).toEqual({ ok: true });
+  const posts = readdirSync(join(dir, "calls"))
+    .filter((name) => !before.has(name))
+    .map((name) =>
+      readFileSync(join(dir, "calls", name), "utf8").split("\0").slice(0, -1)
+    );
+  expect(posts).toEqual([
+    [
+      "pr",
+      "comment",
+      "1",
+      "--repo",
+      "owner/repo",
+      "--body",
+      "merge-gate: waived\n\n- perf: covered by GC4",
     ],
   ]);
 });

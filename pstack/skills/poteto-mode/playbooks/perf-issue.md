@@ -22,4 +22,4 @@
 
 For sustained improvement against a metric rather than a one-off fix, use the Hillclimb playbook (`playbooks/hillclimb.md`).
 
-**Reply:** baseline number, post-fix number, delta, artifact path.
+**Reply:** catch the operator up per the **ketchup** skill, covering baseline number, post-fix number, delta, artifact path.

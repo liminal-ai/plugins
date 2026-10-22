@@ -47,5 +47,5 @@ Swap in the real paths, skills, and done checks. Informal wording works.
 - `/ketchup` catches you up on this chat since your last message and lists every call that waits on you.
 - `/poteto-mode full autopilot on this queue. each item is independent.`
 - `/poteto-mode autopilot these changes but stack them, don't ship. i'll land the stack.`
-- `/reflect capture what we learned so the next run doesn't repeat it.` Approve only edits that change a future decision.
+- `/reflect record what went wrong in this run for the next retro.` It saves observations and changes nothing.
 - `/bro` restates the last reply in plain words.
