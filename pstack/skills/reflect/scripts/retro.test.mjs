@@ -659,21 +659,64 @@ test("a file written during the scan or before the push is never pushed unscanne
   assert.equal(git("rev-parse", "HEAD").stdout, spawnSync("git", ["--git-dir", remote, "rev-parse", "main"], { encoding: "utf-8" }).stdout);
 });
 
-test("without gitleaks on PATH nothing is pushed, and REGISTRY.md says why", (t) => {
-  const { store, run } = sandbox(t);
-  const { pushed } = backedUp(t, store);
+// A PATH with git and flock but no gitleaks, and a HOME with no installed scanner.
+function noScanner(t) {
   const bin = scratchDir(t);
   for (const tool of ["git", "flock"]) symlinkSync(spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf-8" }).stdout.trim(), join(bin, tool));
-  const noScanner = { PATH: bin };
-  const r = run(["register", A], undefined, noScanner);
+  return { PATH: bin, HOME: scratchDir(t) };
+}
+
+function fakeScanner(path, exitCode = 0) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `#!/bin/sh\n: > "$0.ran"\nexit ${exitCode}\n`, { mode: 0o755 });
+}
+
+test("without gitleaks anywhere nothing is pushed, and REGISTRY.md says where it looked", (t) => {
+  const { store, run } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  const env = noScanner(t);
+  const r = run(["register", A], undefined, env);
   assert.equal(r.code, 0, "the record is still written");
-  assert.match(r.err, /backup scan failed \(gitleaks is not on PATH/);
+  const looked = `gitleaks not found in \\$GITLEAKS_PATH, on PATH, or at ${join(env.HOME, "lim", "service", "gitleaks")}/\\*/bin/gitleaks`;
+  assert.match(r.err, new RegExp(`backup scan failed \\(${looked}`));
   assert.deepEqual(pushed(), []);
-  assert.match(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /## Not backed up: the last backup failed\n\nscan failed at .*gitleaks is not on PATH/);
+  assert.match(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), new RegExp(`## Not backed up: the last backup failed\n\nscan failed at .*${looked}`));
 
   assert.equal(run(["register", B]).err, "");
   assert.deepEqual(pushed(), [`retro: register ${B}`, `retro: register ${A}`]);
   assert.doesNotMatch(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /Not backed up/);
+});
+
+test("GITLEAKS_PATH names the scanner when gitleaks is not on PATH", (t) => {
+  const { store, run } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  const scanner = join(scratchDir(t), "gitleaks-custom");
+  fakeScanner(scanner);
+  assert.equal(run(["register", A], undefined, { ...noScanner(t), GITLEAKS_PATH: scanner }).err, "");
+  assert.ok(existsSync(`${scanner}.ran`), "the named scanner ran");
+  assert.deepEqual(pushed(), [`retro: register ${A}`]);
+});
+
+test("a GITLEAKS_PATH that does not run fails closed instead of falling back", (t) => {
+  const { store, run } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  const missing = join(scratchDir(t), "no-such-gitleaks");
+  const r = run(["register", A], undefined, { GITLEAKS_PATH: missing });
+  assert.match(r.err, new RegExp(`backup scan failed \\(GITLEAKS_PATH=${missing} does not run`));
+  assert.deepEqual(pushed(), []);
+});
+
+test("with no GITLEAKS_PATH and none on PATH, the newest ~/lim/service/gitleaks install scans", (t) => {
+  const { store, run } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  const env = noScanner(t);
+  const install = (version) => join(env.HOME, "lim", "service", "gitleaks", version, "bin", "gitleaks");
+  fakeScanner(install("8.9.0"), 1);
+  fakeScanner(install("8.30.1"));
+  assert.equal(run(["register", A], undefined, env).err, "");
+  assert.ok(existsSync(`${install("8.30.1")}.ran`), "8.30.1 is newer than 8.9.0");
+  assert.ok(!existsSync(`${install("8.9.0")}.ran`));
+  assert.deepEqual(pushed(), [`retro: register ${A}`]);
 });
 
 test("register keeps every model a thread ran on, in the order recorded", (t) => {
