@@ -195,30 +195,33 @@ const isBugbot = (check: HeadCheck): boolean =>
 /** Creation order, not edit time, so editing an old comment never makes it the newest. */
 const newestFirst = (a: IssueComment, b: IssueComment): number => b.id - a.id;
 
-/** The most recent comment with a verdict line decides; its last such line counts. */
+/**
+ * The most recent comment with a verdict line decides; its last such line counts, with the lines below it.
+ * An edit can leave an older verdict and its boxes above, and those belong to that older verdict.
+ */
 export function findVerdictLine(comments: readonly IssueComment[]): {
   readonly line: string;
+  readonly below: readonly string[];
   readonly url: string;
   readonly comment: IssueComment;
 } | null {
   for (const comment of [...comments].sort(newestFirst)) {
-    const found = lines(comment.body).filter((line) =>
-      line.startsWith(VERDICT_PREFIX)
-    );
-    const last = found[found.length - 1];
-    if (last !== undefined) return { line: last, url: comment.url, comment };
+    const all = lines(comment.body);
+    const at = all.findLastIndex((line) => line.startsWith(VERDICT_PREFIX));
+    if (at !== -1)
+      return { line: all[at], below: all.slice(at + 1), url: comment.url, comment };
   }
   return null;
 }
 
-/** The box lines in a verdict comment, and any line that starts like one but does not parse. */
-export function parseBoxLines(body: string): {
+/** The box lines under a verdict line, and any line that starts like one but does not parse. */
+export function parseBoxLines(below: readonly string[]): {
   readonly boxes: readonly VerdictBox[];
   readonly unread: readonly string[];
 } {
   const boxes: VerdictBox[] = [];
   const unread: string[] = [];
-  for (const line of lines(body).map(readable)) {
+  for (const line of below.map(readable)) {
     if (!BOX_PREFIX.test(line)) continue;
     const match = BOX_LINE.exec(line);
     if (match === null) unread.push(line);
@@ -428,6 +431,9 @@ const planBoxes: Requirement = {
     if (fact.kind !== "found")
       return met("no verdict to read; see Independent verdict");
     const listed = new Set(fact.boxes.map((box) => box.id));
+    const repeated = [...listed].filter(
+      (id) => fact.boxes.filter((box) => box.id === id).length > 1
+    );
     const omitted = (plan?.ids ?? []).filter((id) => !listed.has(id));
     const noReason = fact.boxes.filter(
       (box) => box.status !== "done" && box.note === ""
@@ -448,6 +454,12 @@ const planBoxes: Requirement = {
         `${fact.unreadBoxLines.length} box line${fact.unreadBoxLines.length === 1 ? " does" : "s do"} not read as ${BOX_FORMS}`
       );
       details.push(...fact.unreadBoxLines.map((line) => `unread: ${line}`));
+    }
+    if (repeated.length > 0) {
+      parts.push(
+        `${repeated.length} box${repeated.length === 1 ? " is" : "es are"} listed more than once, so the verdict does not say which status holds. Have the verifier list each box once`
+      );
+      details.push(`listed more than once: ${repeated.join(" ")}`);
     }
     if (omitted.length > 0) {
       parts.push(

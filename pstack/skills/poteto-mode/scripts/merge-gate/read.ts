@@ -50,7 +50,7 @@ export async function readFacts(
   };
   if (found !== null) {
     const parsed = parseVerdictLine(found.line);
-    const { boxes, unread } = parseBoxLines(found.comment.body);
+    const { boxes, unread } = parseBoxLines(found.below);
     verdict =
       parsed === null
         ? { kind: "malformed", line: found.line, url: found.url }
