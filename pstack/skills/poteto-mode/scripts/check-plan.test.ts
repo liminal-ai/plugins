@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,11 +8,14 @@ const checker = join(import.meta.dir, "check-plan.mjs");
 const rule =
 	"Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.";
 
+const recordOfDone = "This plan is the record of done.";
+
 const validPlan = `# Demo
 
 ## How to read this
 One box is one unit of work and names the evidence. Check a box only when its evidence exists. See playbooks/.
 ${rule}
+${recordOfDone}
 
 ## Program checklist
 ### Arm the program
@@ -49,7 +52,7 @@ File a ticket for each Owed item. Name each scope cut. Delete the \`schedule_tas
 ## Appendix Prototype evidence
 Recorded.
 
-## Appendix Later work and scope cuts
+## Appendix. Later work and scope cuts
 **Scope cuts.**
 None.
 **Decided no.**
@@ -125,7 +128,7 @@ test("rejects a Verify, model block out of place or without a box", () => {
 });
 
 test("requires the later-work appendix, with a reason for each decided no", () => {
-	const later = validPlan.indexOf("## Appendix Later work");
+	const later = validPlan.indexOf("## Appendix. Later work");
 	expect(runText(validPlan.slice(0, later), 1).stderr).toContain("Later work and scope cuts");
 	expect(runText(validPlan.replace("No, because the app has no mobile users.", "Not now."), 1).stderr).toContain("a Decided no item gives no reason");
 	expect(runText(validPlan.replace("**Scope cuts.**\nNone.\n", "**Scope cuts.**\n"), 1).stderr).toContain('Scope cuts. lists nothing. Write "None."');
@@ -139,4 +142,29 @@ test("requires close-out to read back the owed list, the scope cuts, and the wak
 test("requires the role file's wake mechanism, not a Claude-only loop", () => {
 	const result = runText(validPlan.replace("`schedule_task` status message", "/loop 1h status message"), 1);
 	expect(result.stderr).toContain('Program checklist lacks "schedule_task"');
+});
+
+const playbook = readFileSync(join(import.meta.dir, "..", "playbooks", "multi-phase-plan.md"), "utf8");
+const skeleton = playbook.slice(playbook.indexOf("````markdown\n") + 12, playbook.lastIndexOf("````"));
+
+test("the template opts in to the record of done", () => {
+	const later = skeleton.indexOf("## Appendix. Later work and scope cuts");
+	expect(later).toBeGreaterThan(-1);
+	expect(runText(skeleton.slice(0, later), 1).stderr).toContain('no "## Appendix. Later work and scope cuts" section');
+});
+
+test("a plan written before the record of done keeps the checks it had", () => {
+	const legacy = validPlan
+		.replace(`${recordOfDone}\n`, "")
+		.replace("`schedule_task` status message", "/loop 1h status message")
+		.replace("File a ticket for each Owed item. Name each scope cut. Delete the `schedule_task`.", "Close.")
+		.replace(/## Appendix\. Later work[\s\S]*$/, "## Appendix E. Reserved calls\nThe operator's calls.\n");
+	const result = runText(legacy, 0);
+	expect(result.stderr).toBe("");
+	expect(runText(legacy.replace("/loop 1h status message", "status message"), 1).stderr).toContain('Program checklist lacks "schedule_task"');
+});
+
+test("an opted-in plan's own Appendix E does not stand in for the Later work appendix", () => {
+	const result = runText(validPlan.replace(/## Appendix\. Later work[\s\S]*$/, "## Appendix E. Later work the operator reserved\nThe operator's calls.\n"), 1);
+	expect(result.stderr).toContain('no "## Appendix. Later work and scope cuts" section');
 });
