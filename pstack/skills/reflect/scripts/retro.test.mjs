@@ -14,8 +14,11 @@ const C = "cccccccc-0000-4000-8000-000000000003";
 function sandbox(t) {
   const store = mkdtempSync(join(tmpdir(), "retro-store-"));
   t.after(() => rmSync(store, { recursive: true, force: true }));
+  // A gitleaks that finds nothing, so the backup can push; the script's own patterns still scan.
+  const scanner = scratchDir(t);
+  writeFileSync(join(scanner, "gitleaks"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const env = (nowIso, extra = {}) => {
-    const e = { ...process.env, PSTACK_STORE: store, ...extra };
+    const e = { ...process.env, PSTACK_STORE: store, PATH: `${scanner}:${process.env.PATH}`, ...extra };
     if (nowIso) e.RETRO_NOW = nowIso;
     else delete e.RETRO_NOW;
     return e;
@@ -551,7 +554,7 @@ test("a failed push never fails the command, and the next write pushes what wait
   git("remote", "set-url", "origin", `${remote}-missing`);
   const failed = run(["register", A]);
   assert.equal(failed.code, 0);
-  assert.match(failed.err, /retro backup push failed/);
+  assert.match(failed.err, /retro: backup push failed/);
   assert.equal(JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8")).failure.step, "push");
   assert.deepEqual(pushed(), []);
   git("remote", "set-url", "origin", remote);
@@ -654,4 +657,36 @@ test("a file written during the scan or before the push is never pushed unscanne
   assert.equal(pushed().length, 3);
   assert.ok(!leaked(), "the held-back commit is folded away, not pushed");
   assert.equal(git("rev-parse", "HEAD").stdout, spawnSync("git", ["--git-dir", remote, "rev-parse", "main"], { encoding: "utf-8" }).stdout);
+});
+
+test("without gitleaks on PATH nothing is pushed, and REGISTRY.md says why", (t) => {
+  const { store, run } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  const bin = scratchDir(t);
+  for (const tool of ["git", "flock"]) symlinkSync(spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf-8" }).stdout.trim(), join(bin, tool));
+  const noScanner = { PATH: bin };
+  const r = run(["register", A], undefined, noScanner);
+  assert.equal(r.code, 0, "the record is still written");
+  assert.match(r.err, /backup scan failed \(gitleaks is not on PATH/);
+  assert.deepEqual(pushed(), []);
+  assert.match(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /## Not backed up: the last backup failed\n\nscan failed at .*gitleaks is not on PATH/);
+
+  assert.equal(run(["register", B]).err, "");
+  assert.deepEqual(pushed(), [`retro: register ${B}`, `retro: register ${A}`]);
+  assert.doesNotMatch(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /Not backed up/);
+});
+
+test("register keeps every model a thread ran on, in the order recorded", (t) => {
+  const { run, record, store } = sandbox(t);
+  assert.equal(run(["register", A, "--model", "claudeAgent/claude-opus-5-5@run-1"]).code, 0);
+  assert.equal(run(["register", A, "--model", "claudeAgent/claude-fable-5-1@run-212", "--model", "claudeAgent/claude-opus-5-5@run-1"]).code, 0);
+  assert.equal(run(["register", A, "--model", "codex/gpt-6.1-sol@2026-10-19"]).code, 0);
+  assert.deepEqual(
+    record(A).models.map(({ provider, model, from }) => `${provider}/${model}@${from}`),
+    ["claudeAgent/claude-opus-5-5@run-1", "claudeAgent/claude-fable-5-1@run-212", "codex/gpt-6.1-sol@2026-10-19"],
+  );
+  assert.match(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), /claudeAgent\/claude-opus-5-5 from run-1<br>claudeAgent\/claude-fable-5-1 from run-212<br>codex\/gpt-6.1-sol from 2026-10-19/);
+  const bad = run(["register", A, "--model", "claude-opus-5-5"]);
+  assert.equal(bad.code, 1);
+  assert.match(bad.err, /--model takes <provider>\/<model>@<from>/);
 });
