@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.ts";
 import type { IssueComment } from "./gate.ts";
@@ -433,6 +434,49 @@ describe("merge-gate", () => {
         i % 2 === 0 ? `- ${line}` : `**${line}**`
       );
       expect((await planGate([verdictWith(lines)])).exit).toBe(0);
+    });
+
+    it("requires the boxes of lanes indented in the plan", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "merge-gate-plan-"));
+      const indented = join(directory, "plan.md");
+      writeFileSync(
+        indented,
+        readFileSync(plan, "utf8").replaceAll(/^- \[ \] Lane/gm, " - [ ] Lane")
+      );
+      try {
+        const result = await planGate(
+          [verdictWith(allDone().filter((line) => !line.includes("live-")))],
+          ["--check", "--plan", indented, "--plan-pr", "GC2"]
+        );
+        expect(result.exit).toBe(1);
+        expect(result.out).toContain(
+          `  omitted: ${GC2_IDS.filter((id) => id.startsWith("live-")).join(" ")}`
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("reads only the box lines under the verdict line that counts", async () => {
+      const edited = comment(
+        [
+          `pstack-verdict: PASS+NOTES head=${repos.oldHead} base=${repos.c0} by=codex/gpt-6.1-sol`,
+          ...allDone(),
+          `pstack-verdict: PASS+NOTES head=${repos.head} base=${repos.main} by=codex/gpt-6.1-sol`,
+          "Rechecked at the new head.",
+        ].join("\n")
+      );
+      const result = await planGate([edited]);
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain(`  omitted: ${GC2_IDS.join(" ")}`);
+    });
+
+    it("refuses a box listed more than once", async () => {
+      for (const extra of ["box live-1: n/a. It did not run.", "box live-1: done"]) {
+        const result = await planGate([verdictWith([...allDone(), extra])]);
+        expect(result.exit).toBe(1);
+        expect(result.out).toContain("  listed more than once: live-1");
+      }
     });
 
     it("refuses a verdict that omits one box", async () => {

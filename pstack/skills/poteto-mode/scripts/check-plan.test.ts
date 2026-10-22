@@ -113,6 +113,26 @@ test("prints the verdict box ids of each PR", () => {
 	expect(result.stdout).toContain("verdict boxes: unit-1 live-1 live-2 live-3 live-4 live-5 live-6 live-7 live-8 live-9 live-10 perf\n");
 });
 
+const allIds = "verdict boxes: unit-1 live-1 live-2 live-3 live-4 live-5 live-6 live-7 live-8 live-9 live-10 perf\n";
+const lane = (n: number) => `- [ ] Lane ${n}. Save \`lane-${n}.png\`. Pass when evidence exists.`;
+
+test("gives indented top-level boxes the ids it checks them as", () => {
+	for (const indent of [" ", "  ", "   "]) {
+		const result = runText(validPlan.replaceAll(/^- \[ \] Lane/gm, `${indent}- [ ] Lane`), 0);
+		expect(result.stdout).toContain(allIds);
+	}
+});
+
+test("reads a box indented under another as its sub-step, with no id of its own", () => {
+	const result = runText(validPlan.replace(lane(3), `${lane(3)}\n  - [ ] Open the app first.`), 0);
+	expect(result.stdout).toContain(allIds);
+});
+
+test("keeps a verify block's boxes across bold text that is not a block heading", () => {
+	const result = runText(validPlan.replace(lane(6), `**Linux.**\n${lane(6)}`), 0);
+	expect(result.stdout).toContain(allIds);
+});
+
 const modelBlock = "**Verify, model.** Run the formal verification skill.\n- [ ] A stopped envelope never starts. Pass when it holds.\n";
 
 test("accepts a Verify, model block after the perf block and gives its boxes ids", () => {
