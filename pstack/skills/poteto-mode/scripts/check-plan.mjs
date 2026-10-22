@@ -18,10 +18,13 @@ const SUB_BLOCKS = [
 	"Merge.",
 ];
 const MODEL_BLOCK = "Verify, model.";
+// The template writes this sentence. A plan without it predates the later-work record, so its checks stay as they were.
+const RECORD_OF_DONE = "This plan is the record of done.";
+const LATER_WORK_TITLE = "Appendix. Later work and scope cuts";
 const LATER_WORK = ["Scope cuts.", "Decided no.", "Owed."];
 const CLOSE_MARKERS = ["Owed", "scope cut", "schedule_task"];
 const PROGRAM_H3 = ["Arm the program", "Spawn owners", "PR mechanics", "Verdict and merge", "Boot recipe"];
-const PROGRAM_MARKERS = ["show origin/lim:", "schedule_task", "status message"];
+const PROGRAM_MARKERS = ["show origin/lim:", "status message"];
 const HOW_TO_READ_MARKERS = [
 	"One box is one unit of work",
 	"names the evidence",
@@ -82,6 +85,8 @@ if (h1 !== -1 && howToRead) {
 	}
 }
 
+const recordOfDone = Boolean(howToRead && bodyText(howToRead).includes(RECORD_OF_DONE));
+
 const program = find("Program checklist");
 if (!program) fail(1, 'no "## Program checklist" section');
 else {
@@ -95,6 +100,8 @@ else {
 	for (const marker of PROGRAM_MARKERS) {
 		if (!bodyText(program).includes(marker)) fail(program.n, `Program checklist lacks "${marker}"`);
 	}
+	const wakes = recordOfDone ? ["schedule_task"] : ["schedule_task", "/loop 1h"];
+	if (!wakes.some((wake) => bodyText(program).includes(wake))) fail(program.n, 'Program checklist lacks "schedule_task"');
 }
 
 const close = find("Close the program");
@@ -178,12 +185,14 @@ if (closeIndex !== -1) {
 		if (!s.title.startsWith("Appendix")) fail(s.n, `"## ${s.title}" after Close the program is not an appendix`);
 	}
 	if (!tail.some((s) => s.title.includes("Prototype evidence"))) fail(close.n, 'no "## Appendix ... Prototype evidence" section');
-	for (const marker of CLOSE_MARKERS) {
-		if (!bodyText(close).includes(marker)) fail(close.n, `Close the program lacks "${marker}"`);
+	if (recordOfDone) {
+		for (const marker of CLOSE_MARKERS) {
+			if (!bodyText(close).includes(marker)) fail(close.n, `Close the program lacks "${marker}"`);
+		}
+		const later = tail.find((s) => s.title === LATER_WORK_TITLE);
+		if (!later) fail(close.n, `no "## ${LATER_WORK_TITLE}" section`);
+		else checkLaterWork(later);
 	}
-	const later = tail.find((s) => s.title.includes("Later work"));
-	if (!later) fail(close.n, 'no "## Appendix ... Later work and scope cuts" section');
-	else checkLaterWork(later);
 }
 
 function checkLaterWork(section) {
