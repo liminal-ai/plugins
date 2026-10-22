@@ -35,3 +35,25 @@ One table per sync. One row per upstream commit that touches `pstack/` or the co
 | `e5136d8` | pstack: restate four overspecified principles as reasoning, not rules (#633) | adapt | D | upstream text taken, the three rewritten descriptions keep the named-only ending without disable-model-invocation (Skill visibility row) |
 | `99743e9` | refactor(pstack): cut marginal sections from four skills (#634) | adapt | D | cuts taken. swarm keeps the fork's role-file and delegate_task worker step (Model per role and Subagents rows), type-system description keeps the named-only ending (Skill visibility row). Fork fix on top of upstream's cut: swarm's step 3, which sets N, is restored, because without it a bare "swarm this" has no worker count |
 | `182f2ce` | feat(pstack): install pstack in Claude Code from a generated tree (#637) | skip |  | Claude Code plugin and generated harness trees replace the per-user install and hide skills from Codex (Install and Skill visibility rows) |
+
+## Sync 2: 101b274 to f2bad52 (pstack 0.15.25 to 0.15.29)
+
+All in PR #24. Lee's call in the 2026-10-20 retro: take everything, sharpen included.
+
+| Upstream | Subject | Decision | PR | Reason |
+|---|---|---|---|---|
+| `0317eb8` | fix(pstack): make a brand with a type guard, not as (#700) | take | #24 | applied unchanged |
+| `a968159` | fix(pstack): name every skill after its folder (#702) | take | #24 | already true in the fork, nothing to apply. The generator check it adds lives in the harness tree generator the fork does not ship (Install row) |
+| `1b80080` | fix(pstack): close three gaps in the Claude Code plugin (#705) | skip |  | Claude Code plugin doc and README install text. The fork installs per user from ~/.agents/skills (Install row) |
+| `019a6a2` | pstack: refresh the docs and add a docs-vs-tree check (#704) | adapt | #24 | guide and README wording taken, scripts/check-pstack-docs.mjs taken as is. Claude Code install and custom-mode text and the generated harness tree left out (Install row). The check found control-cli, control-ui and deslop missing from the README table, so the table now lists them |
+| `16541c6` | fix(pstack): list every waiting item so each ketchup call is decidable (#692) | adapt | #24 | taken with the fork's inline screenshots and recordings and html_render page in place of Mermaid and /visualize (Visuals row). Description keeps the named-only ending (Skill visibility row) |
+| `bc14437` | fix(pstack): say outright that ketchup never cuts items to stay under a word count (#708) | take | #24 | applied with 16541c6 |
+| `4382e68` | feat(pstack): add /create-formal-verification-skill (#709) | adapt | #24 | description ends with the named-only sentence, no disable-model-invocation (Skill visibility row) |
+| `0b8e952` | chore(pstack): bump to 0.15.26 (#710) | skip |  | version bump |
+| `75fabac` | pstack: drop the rewritten-prompt ban from sharpen (#712) | take | #24 | superseded by 88d4751, which the fork takes whole |
+| `0148b78` | chore(pstack): bump to 0.15.27 (#713) | skip |  | version bump |
+| `f9be7aa` | pstack: offer formal verification in setup, sync help and guide (#715) | adapt | #24 | setup-pstack step 8 taken. poteto-help keeps the fork's per-user install steps and T3 note, with the formal verification offer added to its step 2. The guide's Claude Code install line is left out (Install row) |
+| `6b78e9f` | fix(pstack): add TLA+ default and no-verifier fallback to create-formal-verification-skill (#721) | take | #24 | applied unchanged |
+| `7b353f7` | pstack: add maintain-formal-verification-skill (#716) | adapt | #24 | description ends with the named-only sentence, no disable-model-invocation (Skill visibility row) |
+| `d457567` | chore(pstack): bump to 0.15.28, sync guide with create-formal-verification-skill (#724) | adapt | #24 | guide line taken, version bump left out |
+| `88d4751` | pstack: restore /sharpen to the original prompt, return only the rewrite (#729) | adapt | #24 | sharpen replaced with upstream's rewrite-the-prompt version over the fork's do-the-work version. Description keeps the named-only ending (Skill visibility row). Version bump left out |
