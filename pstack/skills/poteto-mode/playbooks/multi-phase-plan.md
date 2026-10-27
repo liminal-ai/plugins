@@ -78,7 +78,7 @@ Each live lane runs on its own cloud VM (the `cloud workers` line in the role fi
 - [ ] `git fetch origin <head-branch> && git checkout <head SHA>`.
 - [ ] <Start the backend and the surface. Wait for ready.>
 - [ ] <Deliver input only through the verify skill's commands. Name the read-only diagnostics.>
-- [ ] Save every screenshot to `/tmp/swarm-<pr-id>/worker-<n>/<slug>.png` and return the paths with the report.
+- [ ] Save every screenshot to `.pstack/runs/<run>/proof/<pr-id>/lane-<n>/<slug>.png` in the lane's checkout and return the files with the report.
 
 ## <Task as a verb phrase> (<PR id>)
 

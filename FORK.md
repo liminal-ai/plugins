@@ -21,8 +21,8 @@ comm -12 <(git diff --name-only $SYNC upstream/main -- pstack | sort) \
 | Skill in pstack-lim | Upstream path | Matching upstream commit | Local edits |
 |---|---|---|---|
 | `pstack/skills/deslop/SKILL.md` | `cursor-team-kit/skills/deslop/SKILL.md` | `b21ab16`, byte-identical | none |
-| `pstack/skills/control-cli/SKILL.md` | `cursor-team-kit/skills/control-cli/SKILL.md` | `d018dc4`, byte-identical | none |
-| `pstack/skills/control-ui/SKILL.md` | `cursor-team-kit/skills/control-ui/SKILL.md` | `d018dc4`, byte-identical at the copy | drops the `verify-this` pointer, counts T3's browser preview tools |
+| `pstack/skills/control-cli/SKILL.md` | `cursor-team-kit/skills/control-cli/SKILL.md` | `d018dc4`, byte-identical at the copy | keeps the harness in the run folder, not `/tmp` (Scratch row) |
+| `pstack/skills/control-ui/SKILL.md` | `cursor-team-kit/skills/control-ui/SKILL.md` | `d018dc4`, byte-identical at the copy | drops the `verify-this` pointer, counts T3's browser preview tools, saves screenshots in the run folder (Scratch row) |
 
 Check: `git log --oneline <commit>..upstream/main -- cursor-team-kit/skills/<name>` and `git diff upstream/main:cursor-team-kit/skills/<name>/SKILL.md origin/lim:pstack/skills/<name>/SKILL.md`. To refresh, `git show upstream/main:...` over the copy, re-apply the control-ui edit, put the source commit in the commit message and update this table.
 
@@ -42,6 +42,7 @@ pstack upstream is written for Cursor. This fork runs it from T3 Code, where one
 | Skill visibility | `disable-model-invocation: true` on leaf skills | every skill visible, its description ending "Use only when the user or another skill names it." The exceptions are `control-cli`, `control-ui`, `deslop` and `setup-pstack`, which load from the user's own wording on purpose. | Hidden skills made Claude's Skill tool refuse them even when poteto-mode named them. |
 | Install | Cursor plugin, or a generated Claude Code or Codex tree | one per-user copy in `~/.agents/skills`, linked from `~/.claude/skills`, agents in `~/.agents/agents` | One install serves every provider T3 runs. Skills point at those absolute paths. |
 | Visuals | Mermaid diagrams, `/visualize` charts and canvases, generated images, screenshots and videos from Cursor's tools | charts and diagrams on a self-contained HTML page checked with `html_preview` and published with `html_render`, screenshots from the control skill or `preview_snapshot` with `save: true`, recordings from `preview_recording_start` and `preview_recording_stop`, embedded as `![alt](path)` | T3 renders an `html_render` page above the reply and embeds local images and videos by path. It has no `/visualize` or image tool. |
+| Scratch | `/tmp` paths for scratch, harnesses, candidate output and screenshots | `<project>/.pstack/runs/<run>/` in the project's main checkout, with `scratch/` and `proof/`, ignored by git; cleanup runs `references/cleanup-protocol.md` against it | `/tmp` filled with tens of gigabytes that nothing tracked, and verdicts cited reports there. A folder per run in the project gives cleanup one place to look and keeps proof out of worktrees. |
 | Fix target | upstream issues | a PR to `liminal-ai/pstack-lim` against `lim`, then a reinstall | A broken skill gets fixed in this fork, never worked around. |
 
 ## Syncing upstream

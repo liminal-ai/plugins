@@ -68,6 +68,12 @@ const BANNED = [
     fix: "Draw charts and diagrams on a self-contained HTML page, check it with html_preview, and publish it with html_render.",
   },
   {
+    id: "tmp-default",
+    pattern: /[`"']\/tmp\/[^`"'\s]+/g,
+    skip: /\/(?:fixtures|test)\/|\.test\.[cm]?[jt]s$/,
+    fix: "Put scratch and proof in the run folder, <project>/.pstack/runs/<run>/scratch/ or proof/, per poteto-mode's Run folder section.",
+  },
+  {
     id: "hidden-skill",
     pattern: /^disable-model-invocation:\s*true\b/g,
     fix: "Keep skills visible. End the description with \"Use only when the user or another skill names it.\"",
@@ -148,6 +154,7 @@ for (const path of SCANNED.flatMap((d) => walk(join(root, d)))) {
   const text = readFileSync(path, "utf-8");
   const lines = text.split("\n");
   for (const rule of BANNED) {
+    if (rule.skip?.test(file)) continue;
     const pending = PENDING.findIndex((p) => p.rule === rule.id && p.file === file);
     lines.forEach((line, i) => {
       for (const _ of line.matchAll(rule.pattern)) {
