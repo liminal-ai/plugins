@@ -30,3 +30,5 @@ Only product or ops decisions that cannot wait for the next round, such as a run
 ## Dropped
 
 Each observation dropped, with the reason in one sentence.
+
+Keep the tooling reviewer's "Project verify skill and merge brief" list as its own section of the record, after checking each item against the transcript. The thread fixes those in its closing upkeep pass, so they are not proposals for the round.
