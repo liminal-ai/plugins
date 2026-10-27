@@ -745,6 +745,8 @@ test("registers a delegated child's thread id", (t) => {
     const id = `thread:delegated-task:command%3Amcp%3A08c364f5-0c24-4c5a-bcb9-d058b5f7686c%3Adelegate-task%3A${encodeURIComponent(key)}`;
     assert.equal(run(["register", id]).code, 0, key);
   }
+  const paren = "thread:delegated-task:command%3Amcp%3A08c364f5-0c24-4c5a-bcb9-d058b5f7686c%3Adelegate-task%3Areview)r1";
+  run(["register", paren, "--title", "paren"]);
+  assert.ok(run(["status"]).out.includes(`[paren](<t3-thread://v1/${paren}>)`));
   assert.match(run(["status"]).out, /lane 7/);
 });
-

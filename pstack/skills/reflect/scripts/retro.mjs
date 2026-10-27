@@ -338,7 +338,9 @@ function cmdRegister(args) {
 }
 
 function threadLabel(t) {
-  return `[${t.title ?? t.thread.slice(0, 8)}](t3-thread://v1/${t.thread})`;
+  const target = `t3-thread://v1/${t.thread}`;
+  // A parenthesis in a child's id would end a bare link target early, so such a target goes in angle brackets.
+  return `[${t.title ?? t.thread.slice(0, 8)}](${/[()]/.test(t.thread) ? `<${target}>` : target})`;
 }
 
 function currentTrails(t) {
