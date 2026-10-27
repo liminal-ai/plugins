@@ -97,9 +97,17 @@ export interface PlanRef {
 /** The plan the run checks: the one passed, else the one the PR body declares. */
 export type PlanFact =
   | { readonly kind: "none" }
-  | { readonly kind: "read"; readonly boxes: PlanBoxes; readonly declared: boolean }
+  | {
+      readonly kind: "read";
+      readonly boxes: PlanBoxes;
+      readonly declared: boolean;
+    }
   | { readonly kind: "declared-missing"; readonly declared: PlanRef }
-  | { readonly kind: "mismatch"; readonly declared: PlanRef; readonly passed: PlanRef };
+  | {
+      readonly kind: "mismatch";
+      readonly declared: PlanRef;
+      readonly passed: PlanRef;
+    };
 
 /** The required verify boxes of the PR's section in its plan, as check-plan.mjs names them. */
 export interface PlanBoxes {
@@ -303,7 +311,9 @@ export function strayWaivers(facts: Facts): string[] {
     const requirement = REQUIREMENTS.find((r) => r.waiver === waiver.check);
     return requirement === undefined || !requirement.evaluate(facts).met
       ? []
-      : [`--waive ${waiver.check}: ${requirement.name} is met, so there is nothing to waive`];
+      : [
+          `--waive ${waiver.check}: ${requirement.name} is met, so there is nothing to waive`,
+        ];
   });
   return [...boxes, ...checks];
 }
@@ -585,7 +595,10 @@ const planBoxes: Requirement = {
         : [`changed: box ${box.id}, accepted by ${change.who}: ${change.why}`];
     });
     const notesBelow = [...noPlan, ...changes];
-    return met(notes.join(", "), notesBelow.length === 0 ? undefined : notesBelow);
+    return met(
+      notes.join(", "),
+      notesBelow.length === 0 ? undefined : notesBelow
+    );
   },
 };
 

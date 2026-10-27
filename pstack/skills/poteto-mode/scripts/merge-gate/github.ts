@@ -228,9 +228,7 @@ export class GhGitHub implements GitHub {
     ]);
     if (result.code === 0) return result.stdout;
     if (result.stderr.includes("(HTTP 404)")) return null;
-    readError(
-      firstLine(result.stderr) || `gh api exited ${result.code}`
-    );
+    readError(firstLine(result.stderr) || `gh api exited ${result.code}`);
   }
 
   async mergedPullRequests(
@@ -268,9 +266,12 @@ export class GhGitHub implements GitHub {
           number: pull.number,
           mergedAt: string(pull.mergedAt, "merged pull request.mergedAt"),
           mergedBy:
-            pull.mergedBy === null || pull.mergedBy === undefined
+            pull.mergedBy == null
               ? null
-              : string(record(pull.mergedBy, "mergedBy").login, "mergedBy.login"),
+              : string(
+                  record(pull.mergedBy, "mergedBy").login,
+                  "mergedBy.login"
+                ),
           head: string(pull.headRefOid, "merged pull request.headRefOid"),
         };
       })
