@@ -9,6 +9,8 @@ import { fileURLToPath } from "url";
 
 const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
 const SCANNED = ["pstack/skills", "pstack/agents"];
+// Cursor automations ship unported; only rules marked `everywhere` reach them.
+const AUTOMATIONS = "pstack/automations";
 const TEXT = /\.(md|mjs|js|ts|sh|json|tsv|ya?ml)$/;
 
 const BANNED = [
@@ -71,6 +73,7 @@ const BANNED = [
     id: "tmp-default",
     pattern: /[`"']\/tmp\/[^`"'\s]+/g,
     skip: /\/(?:fixtures|test)\/|\.test\.[cm]?[jt]s$/,
+    everywhere: true,
     fix: "Put scratch and proof in the run folder, <project>/.pstack/runs/<run>/scratch/ or proof/, per poteto-mode's Run folder section.",
   },
   {
@@ -149,12 +152,13 @@ const failures = [];
 const fail = (where, id, fix) => failures.push(`${where}  [${id}]  ${fix}`);
 const pendingSeen = PENDING.map(() => 0);
 
-for (const path of SCANNED.flatMap((d) => walk(join(root, d)))) {
+for (const path of [...SCANNED, AUTOMATIONS].flatMap((d) => walk(join(root, d)))) {
   const file = relative(root, path);
+  const automation = file.startsWith(`${AUTOMATIONS}/`);
   const text = readFileSync(path, "utf-8");
   const lines = text.split("\n");
   for (const rule of BANNED) {
-    if (rule.skip?.test(file)) continue;
+    if (rule.skip?.test(file) || (automation && !rule.everywhere)) continue;
     const pending = PENDING.findIndex((p) => p.rule === rule.id && p.file === file);
     lines.forEach((line, i) => {
       for (const _ of line.matchAll(rule.pattern)) {
@@ -164,7 +168,7 @@ for (const path of SCANNED.flatMap((d) => walk(join(root, d)))) {
     });
   }
   lines.forEach((line, i) => {
-    if (!CLAUDE_PROVIDER.test(line)) return;
+    if (automation || !CLAUDE_PROVIDER.test(line)) return;
     if (lines.slice(Math.max(0, i - NEAR), i + NEAR + 1).some((l) => /fastMode/.test(l))) {
       fail(`${file}:${i + 1}`, "claude-fast-default", "Claude target examples never mention fastMode. The Speed rule in poteto-mode owns Claude fast mode.");
     }

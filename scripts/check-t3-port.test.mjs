@@ -34,6 +34,7 @@ test("the fork as it stands passes", () => {
 });
 
 const regressions = [
+  ["tmp-default", "pstack/automations/benny/templates/configuration.example.yaml", (s) => s.replace('".pstack/runs/benny/proof"', '"/tmp/benny-artifacts"')],
   ["tmp-default", "pstack/skills/arena/SKILL.md", (s) => s.replace("`<run folder>/scratch/arena-<slug>/candidate-<n>/`", "`/tmp/arena-<slug>/candidate-<n>/`")],
   ["missing-anchor", "pstack/skills/poteto-mode/SKILL.md", (s) => s.replaceAll("delegate_task", "Task")],
   ["claude-fast-default", "pstack/skills/setup-pstack/SKILL.md", (s) => s.replace("judgment and prose: claudeAgent/claude-opus-5-5 effort=xhigh", "judgment and prose: claudeAgent/claude-opus-5-5 effort=xhigh fastMode=true")],

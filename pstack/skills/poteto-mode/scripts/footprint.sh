@@ -49,7 +49,7 @@ tmux_sessions() {
 }
 
 tmp_entries() {
-	find /tmp -mindepth 1 -maxdepth 1 -user "$(id -u)" 2>/dev/null | sort
+	{ find /tmp -mindepth 1 -maxdepth 1 -user "$(id -u)" 2>/dev/null || true; } | sort
 }
 
 repo_state() {
