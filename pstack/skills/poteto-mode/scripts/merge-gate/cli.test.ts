@@ -781,7 +781,13 @@ describe("merge-gate", () => {
         expect(spaced.out).toContain("The verdict omits 16 required boxes of GC2");
         const malformed = await declaring(`pstack-plan: ${join(dir, "plan.md")}`, [verdictWith(allDone())]);
         expect(malformed.exit).toBe(2);
-        expect(malformed.out).toContain("does not read as pstack-plan: <plan file> pr=<PR id>");
+        expect(malformed.out).toContain("does not read as one pstack-plan: <plan file> pr=<PR id> line");
+        const twice = await declaring(
+          `pstack-plan: ${join(dir, "plan.md")} pr=GC2\n\n\`\`\`\npstack-plan: ${plan} pr=GC2\n\`\`\``,
+          [verdictWith(allDone())]
+        );
+        expect(twice.exit).toBe(2);
+        expect(twice.out).toContain("2 plan lines");
       });
 
       it("refuses a stale copy whose path ends like the declared plan", async () => {

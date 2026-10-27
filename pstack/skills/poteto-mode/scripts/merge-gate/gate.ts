@@ -273,18 +273,19 @@ export function parseBoxLines(below: readonly string[]): {
 }
 
 /**
- * The first `pstack-plan: <path> pr=<id>` line of a PR body; the path may hold spaces. A line that starts
- * `pstack-plan:` and does not parse comes back as `{ malformed }`, so a declared plan is never dropped silently.
+ * The PR body's one `pstack-plan: <path> pr=<id>` line; the path may hold spaces. Any line that starts
+ * `pstack-plan:`, in a code block or not, counts. Two of them, or one that does not parse, come back as
+ * `{ malformed }`, so no declared plan is ever dropped or outranked silently.
  */
 export function declaredPlan(
   body: string
 ): PlanRef | { readonly malformed: string } | null {
-  for (const line of lines(body)) {
-    if (!line.startsWith(PLAN_PREFIX)) continue;
-    const match = PLAN_DECLARATION.exec(line);
-    return match === null ? { malformed: line } : { path: match[1], pr: match[2] };
-  }
-  return null;
+  const declared = lines(body).filter((line) => line.startsWith(PLAN_PREFIX));
+  if (declared.length === 0) return null;
+  if (declared.length > 1)
+    return { malformed: `${declared.length} plan lines (${declared.join(" | ")}); a PR declares one plan` };
+  const match = PLAN_DECLARATION.exec(declared[0]);
+  return match === null ? { malformed: declared[0] } : { path: match[1], pr: match[2] };
 }
 
 /** Who accepted a changed bar and why, read from the note `<who>, <why>`; null unless both are there. */

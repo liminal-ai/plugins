@@ -38,7 +38,7 @@ export async function readFacts(
   const declared = declaredPlan(pull.body);
   if (declared !== null && "malformed" in declared)
     throw new ReadError(
-      `the PR body's plan line "${declared.malformed}" does not read as pstack-plan: <plan file> pr=<PR id>. Fix the line so the gate can check the plan.`
+      `the PR body's plan declaration does not read as one pstack-plan: <plan file> pr=<PR id> line: ${declared.malformed}. Fix the body so the gate can check the plan.`
     );
   const plan = resolvePlan(asked.plan, declared, asked.cwd);
   const [checks, threads, baseUsesMergeQueue] = await Promise.all([
