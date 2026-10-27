@@ -55,7 +55,7 @@ tmp_entries() {
 repo_state() {
 	local repo=$1
 	git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "$repo	not a git repo"; return 0; }
-	git -C "$repo" worktree list --porcelain | awk '/^worktree /{print "worktree\t" $2}'
+	git -C "$repo" worktree list --porcelain | sed -n 's/^worktree /worktree\t/p'
 	git -C "$repo" for-each-ref --format='branch	%(refname:short)' refs/heads
 	git -C "$repo" stash list --format='stash	%gd %h' 2>/dev/null || true
 }
