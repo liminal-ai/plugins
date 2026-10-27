@@ -48,13 +48,35 @@ async function gate(
   });
   const runtime = runtimeFor(github, repos.gate);
   const exit = await main(["--repo", REPO, "--pr", "1", ...flags], runtime);
-  const out = runtime.out();
+  const out = runtime.decision();
   const missing = out
     .split("\n")
     .filter((line) => line.startsWith("missing: "));
   const log = () =>
     readFileSync(join(runtime.store, "merge-gate", "runs.tsv"), "utf8");
-  return { exit, out, missing, calls: github.calls, log };
+  return { exit, out, full: runtime.out(), missing, calls: github.calls, log };
+}
+
+/** Runs `body` with git config entries every git child process sees, as GIT_CONFIG_COUNT passes them. */
+async function withGitConfig<T>(
+  entries: Record<string, string>,
+  body: () => Promise<T>
+): Promise<T> {
+  const pairs = Object.entries(entries);
+  const keys = ["GIT_CONFIG_COUNT", ...pairs.flatMap((_, i) => [`GIT_CONFIG_KEY_${i}`, `GIT_CONFIG_VALUE_${i}`])];
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  process.env.GIT_CONFIG_COUNT = String(pairs.length);
+  pairs.forEach(([key, value], i) => {
+    process.env[`GIT_CONFIG_KEY_${i}`] = key;
+    process.env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  try {
+    return await body();
+  } finally {
+    for (const [key, value] of saved)
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  }
 }
 
 const merged = (calls: readonly string[]) =>
@@ -648,6 +670,151 @@ describe("merge-gate", () => {
       expect(result.out).toContain("  unread: box live-4: passed");
     });
 
+    const perfChanged = (note: string) =>
+      allDone().map((line) => (line === "box perf: done" ? `box perf: changed. ${note}` : line));
+
+    it("counts a changed box that names who accepted it and why, and lists it on the merge", async () => {
+      const result = await planGate(
+        [verdictWith(perfChanged("Lee, 14 of 8,190 arrivals off-slot are LIM-193"))],
+        ["--plan", plan, "--plan-pr", "GC2"]
+      );
+      expect(result.exit).toBe(0);
+      expect(result.out).toStartWith("MERGED: ");
+      expect(result.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 bar changed)\n  changed: box perf, accepted by Lee: 14 of 8,190 arrivals off-slot are LIM-193\n"
+      );
+    });
+
+    it("refuses a changed box with no who and why", async () => {
+      for (const note of ["", "Lee", "Lee,", ", the bar moved"]) {
+        const lines = note === ""
+          ? allDone().map((line) => (line === "box perf: done" ? "box perf: changed" : line))
+          : perfChanged(note);
+        const result = await planGate([verdictWith(lines)]);
+        expect(result.exit).toBe(1);
+        expect(result.missing[0]).toContain(
+          'Plan boxes. 1 changed box does not name who accepted the changed bar and why. Have the verifier write "box <id>: changed. <who>, <why>"'
+        );
+        expect(result.out).toContain("  no who and why: perf");
+      }
+    });
+
+    describe("a plan the PR body declares", () => {
+      const declaring = (
+        body: string,
+        comments: readonly IssueComment[],
+        flags: readonly string[] = ["--check"]
+      ) =>
+        gate(
+          {
+            pull: { headRefOid: repos.head, body: `Adds GC2.\n\n${body}\n` },
+            comments: [...comments, codexComment(repos.head)],
+          },
+          flags
+        );
+      const inCheckout = () => {
+        mkdirSync(join(repos.gate, "docs"), { recursive: true });
+        writeFileSync(join(repos.gate, "docs", "plan.md"), readFileSync(plan, "utf8"));
+        return join(repos.gate, "docs", "plan.md");
+      };
+
+      it("checks the declared plan when no --plan is passed", async () => {
+        const refused = await declaring(`pstack-plan: ${plan} pr=GC2`, [verdictWith([])]);
+        expect(refused.exit).toBe(1);
+        expect(refused.out).toContain("The verdict omits 16 required boxes of GC2");
+
+        const passed = await declaring(`pstack-plan: ${plan} pr=GC2`, [verdictWith(allDone())]);
+        expect(passed.exit).toBe(0);
+        expect(passed.out).toContain(
+          "met: Plan boxes (all 16 required boxes of GC2 listed, from the plan the PR body declares)"
+        );
+      });
+
+      it("resolves a relative declared path from the working directory, and agrees with its full path passed", async () => {
+        const full = inCheckout();
+        const declared = await declaring("pstack-plan: docs/plan.md pr=GC2", [verdictWith(allDone())]);
+        expect(declared.exit).toBe(0);
+        const passed = await declaring(
+          "pstack-plan: docs/plan.md pr=GC2",
+          [verdictWith(allDone())],
+          ["--check", "--plan", full, "--plan-pr", "GC2"]
+        );
+        expect(passed.exit).toBe(0);
+        expect(passed.out).toContain("met: Plan boxes (all 16 required boxes of GC2 listed)");
+      });
+
+      it("refuses a declared plan that is not on this machine and prints the flags to pass", async () => {
+        const result = await declaring("pstack-plan: docs/elsewhere-plan.md pr=GC2", [verdictWith(allDone())]);
+        expect(result.exit).toBe(1);
+        expect(result.missing).toEqual([
+          "missing: Plan boxes. The PR body declares the plan docs/elsewhere-plan.md for GC2, and it is not on this machine. Run the gate from where that path resolves, or pass the plan's path here:",
+        ]);
+        expect(result.out).toContain("\n  --plan docs/elsewhere-plan.md --plan-pr GC2\n");
+      });
+
+      it("refuses a passed plan that disagrees with the declared one and shows both", async () => {
+        const full = inCheckout();
+        for (const flags of [
+          ["--plan", full, "--plan-pr", "GC3"],
+          ["--plan", plan, "--plan-pr", "GC2"],
+        ]) {
+          const result = await declaring(
+            "pstack-plan: docs/plan.md pr=GC2",
+            [verdictWith(allDone())],
+            ["--check", ...flags]
+          );
+          expect(result.exit).toBe(1);
+          expect(result.missing[0]).toStartWith(
+            "missing: Plan boxes. --plan and --plan-pr name another plan than the PR body declares."
+          );
+          expect(result.out).toContain("  declared: pstack-plan: docs/plan.md pr=GC2\n");
+          expect(result.out).toContain(`  passed: --plan ${flags[1]} --plan-pr ${flags[3]}\n`);
+        }
+      });
+
+      it("reads a declared plan whose path has spaces, and refuses a plan line it cannot read", async () => {
+        const dir = join(mkdtempSync(join(tmpdir(), "merge-gate-spaced-")), "Project Plans");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "plan.md"), readFileSync(plan, "utf8"));
+        const spaced = await declaring(`pstack-plan: ${join(dir, "plan.md")} pr=GC2`, [verdictWith([])]);
+        expect(spaced.exit).toBe(1);
+        expect(spaced.out).toContain("The verdict omits 16 required boxes of GC2");
+        const malformed = await declaring(`pstack-plan: ${join(dir, "plan.md")}`, [verdictWith(allDone())]);
+        expect(malformed.exit).toBe(2);
+        expect(malformed.out).toContain("does not read as one pstack-plan: <plan file> pr=<PR id> line");
+        const twice = await declaring(
+          `pstack-plan: ${join(dir, "plan.md")} pr=GC2\n\n\`\`\`\npstack-plan: ${plan} pr=GC2\n\`\`\``,
+          [verdictWith(allDone())]
+        );
+        expect(twice.exit).toBe(2);
+        expect(twice.out).toContain("2 plan lines");
+      });
+
+      it("refuses a stale copy whose path ends like the declared plan", async () => {
+        inCheckout();
+        const stale = join(mkdtempSync(join(tmpdir(), "merge-gate-stale-")), "docs");
+        mkdirSync(stale, { recursive: true });
+        writeFileSync(join(stale, "plan.md"), readFileSync(plan, "utf8"));
+        const result = await declaring(
+          "pstack-plan: docs/plan.md pr=GC2",
+          [verdictWith(allDone())],
+          ["--check", "--plan", join(stale, "plan.md"), "--plan-pr", "GC2"]
+        );
+        expect(result.exit).toBe(1);
+        expect(result.missing[0]).toStartWith(
+          "missing: Plan boxes. --plan and --plan-pr name another plan than the PR body declares."
+        );
+      });
+
+      it("says plainly when no plan was checked, and still passes", async () => {
+        const result = await declaring("", [verdictWith([])]);
+        expect(result.exit).toBe(0);
+        expect(result.out).toContain(
+          "met: Plan boxes (no plan given, 0 boxes listed)\n  No plan checked: the PR declares none and none was passed.\n"
+        );
+      });
+    });
+
     it("checks skips even with no plan given", async () => {
       const result = await planGate(
         [verdictWith(["box perf: skipped. Not run."])],
@@ -879,13 +1046,16 @@ describe("merge-gate", () => {
       });
     }
 
-    it("exits 2 when no remote in the clone points at the repo", async () => {
+    it("exits 2 when the gate's own clone cannot fetch the repo", async () => {
       const github = fakeGitHub({ pull: { headRefOid: repos.head } });
       const runtime = runtimeFor(github, repos.gate);
-      const exit = await main(["--repo", "other/repo", "--pr", "1"], runtime);
+      const exit = await withGitConfig(
+        { [`url.${repos.remote}-missing.insteadOf`]: "https://github.com/other/repo" },
+        () => main(["--repo", "other/repo", "--pr", "1"], runtime)
+      );
       expect(exit).toBe(2);
-      expect(runtime.out()).toContain("no git remote in");
-      expect(github.calls).toEqual([]);
+      expect(runtime.decision()).toStartWith("ERROR: other/repo#1\n");
+      expect(merged(github.calls)).toBe(false);
     });
   });
 
@@ -1042,6 +1212,50 @@ describe("merge-gate", () => {
     expect(result.log()).toContain("\tcheck\twould-merge\t");
   });
 
+  describe("--repo from a directory with no clone of the repo", () => {
+    const fromElsewhere = async (cwd: string, store?: string) => {
+      const github = fakeGitHub({
+        comments: approvals(),
+        pull: { headRefOid: repos.head },
+      });
+      const runtime = { ...runtimeFor(github, cwd), ...(store ? { store } : {}) };
+      const exit = await withGitConfig(
+        {
+          [`url.${repos.remote.slice(0, -".git".length)}.insteadOf`]:
+            "https://github.com/owner/repo",
+        },
+        () => main(["--repo", REPO, "--pr", "1", "--check"], runtime)
+      );
+      return { exit, out: runtime.decision(), store: runtime.store };
+    };
+
+    it("keeps a bare clone of the repo under the store and judges from it", async () => {
+      const first = await fromElsewhere(mkdtempSync(join(tmpdir(), "merge-gate-cwd-")));
+      expect(first.exit).toBe(0);
+      expect(first.out).toStartWith(`WOULD MERGE: owner/repo#1 at ${repos.head.slice(0, 7)}`);
+      const clone = join(first.store, "merge-gate", "repos", "owner", "repo.git");
+      expect(repos.git(clone, "rev-parse", "--is-bare-repository")).toBe("true");
+      expect(repos.git(clone, "config", "remote.origin.url")).toBe(
+        "https://github.com/owner/repo.git"
+      );
+      expect(repos.git(clone, "cat-file", "-t", repos.head)).toBe("commit");
+
+      const again = await fromElsewhere(mkdtempSync(join(tmpdir(), "merge-gate-cwd-")), first.store);
+      expect(again.exit).toBe(0);
+    });
+
+    it("uses the store's clone from a clone of another repo", async () => {
+      const other = mkdtempSync(join(tmpdir(), "merge-gate-other-"));
+      repos.git(other, "init", "--quiet");
+      repos.git(other, "remote", "add", "origin", "https://github.com/other/repo.git");
+      const result = await fromElsewhere(other);
+      expect(result.exit).toBe(0);
+      expect(
+        repos.git(join(result.store, "merge-gate", "repos", "owner", "repo.git"), "cat-file", "-t", repos.head)
+      ).toBe("commit");
+    });
+  });
+
   it("defaults --repo to the origin remote's repo", async () => {
     const github = fakeGitHub({
       comments: approvals(),
@@ -1049,7 +1263,10 @@ describe("merge-gate", () => {
     });
     const runtime = runtimeFor(github, repos.gate);
     expect(await main(["--pr", "1", "--check"], runtime)).toBe(0);
-    expect(github.calls[0]).toStartWith("defaultBranch owner/repo");
+    expect(github.calls.slice(0, 2)).toEqual([
+      "mergeBrief owner/repo",
+      "defaultBranch owner/repo",
+    ]);
   });
 
   it("logs a usage error with whatever context it has", async () => {
@@ -1101,5 +1318,115 @@ describe("merge-gate", () => {
     expect(await main(["--check"], runtime)).toBe(2);
     expect(await main(["--pr", "abc"], runtime)).toBe(2);
     expect(await main(["--pr", "1", "--repo", "noslash"], runtime)).toBe(2);
+  });
+  describe("waived gate checks", () => {
+    const reason = "the e2e runner is down, LIM-200; Lee ran the suite locally";
+
+    it("names the --waive flag under each missing check a lead may waive, and none under the verdict", async () => {
+      const result = await gate({
+        checks: [failing("e2e")],
+        threads: [{ author: "r", path: null, line: null, body: "nit", url: null }],
+        comments: [],
+      });
+      expect(result.exit).toBe(1);
+      for (const check of ["checks", "threads", "codex"])
+        expect(result.out).toContain(
+          `  If the lead accepts merging without it, the lead runs the gate with --waive ${check}=<reason>.`
+        );
+      expect(result.out.match(/--waive /g)).toHaveLength(3);
+      expect(result.out).toContain("missing: Independent verdict.");
+    });
+
+    it("would merge with a missing check the lead waives, and posts nothing under --check", async () => {
+      const result = await gate({ checks: [failing("e2e")] }, ["--check", "--waive", `checks=${reason}`]);
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        `met: Checks (waived by the lead: ${reason}; unmet: 1 failed (e2e). Fix the failures and push.)`
+      );
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(result.log().split("\n")[1]).toEndWith(
+        `\tcheck\twould-merge\t\tcheck checks: ${reason}`
+      );
+    });
+
+    it("posts the waived checks on the PR before it merges, and logs them", async () => {
+      const result = await gate(
+        { checks: [failing("e2e")], comments: [verdictComment("PASS", repos.head, repos.main)] },
+        ["--waive", `checks=${reason}`, "--waive", "codex=Codex is out of quota today"]
+      );
+      expect(result.exit).toBe(0);
+      const posted = result.calls.findIndex((call) => call.startsWith("comment "));
+      expect(result.calls[posted]).toBe(
+        `comment owner/repo#1 merge-gate: the lead waived these missing gate checks to merge ${repos.head}.\n\n- checks: ${reason}\n- codex: Codex is out of quota today`
+      );
+      expect(posted).toBeLessThan(result.calls.findIndex((call) => call.startsWith("merge ")));
+      expect(result.log().split("\n")[1]).toEndWith(
+        `\tmerge\tmerged\t\tcheck checks: ${reason}; check codex: Codex is out of quota today`
+      );
+    });
+
+    it("exits 2 on a --waive for a check that holds", async () => {
+      const result = await gate({}, ["--waive", "threads=nothing open anyway"]);
+      expect(result.exit).toBe(2);
+      expect(result.out).toContain("--waive threads: Review threads is met, so there is nothing to waive");
+      expect(merged(result.calls)).toBe(false);
+      expect(result.log()).toContain("\terror\tusage: --waive threads: Review threads is met");
+    });
+
+    it("exits 2 on a --waive for a check no lead may waive, or with no reason", async () => {
+      for (const [value, text] of [
+        ["verdict=the verifier is slow", '"verdict" is not a check the lead may waive. Waivable: checks, threads, codex.'],
+        ["instruction=Lee is away", '"instruction" is not a check the lead may waive'],
+        ["checks=", "check checks needs a reason: --waive checks=<reason>"],
+      ] as const) {
+        const result = await gate({ checks: [failing()] }, ["--waive", value]);
+        expect(result.exit).toBe(2);
+        expect(result.full).toContain(text);
+        expect(merged(result.calls)).toBe(false);
+      }
+    });
+
+    it("merges nothing when a waived check holds by merge time", async () => {
+      const result = await gate(
+        { checks: [running("e2e")], atMerge: { checks: [passing("e2e")] } },
+        ["--waive", `checks=${reason}`]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("something the run waives came to hold");
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(merged(result.calls)).toBe(false);
+    });
+  });
+
+  describe("merge brief", () => {
+    it("prints the repo's merge brief first, on a check or a refusal", async () => {
+      for (const options of [{}, { checks: [failing("build")] }]) {
+        const result = await gate({
+          ...options,
+          mergeBrief: "# Merging owner/repo\n- Run the e2e suite first.\n",
+        });
+        expect(result.full).toStartWith(
+          "Merge brief for owner/repo:\n# Merging owner/repo\n- Run the e2e suite first.\n\n"
+        );
+        expect(result.calls[0]).toBe("mergeBrief owner/repo");
+      }
+    });
+
+    it("says the repo has no merge brief and what writes one", async () => {
+      const result = await gate({ mergeBrief: null });
+      expect(result.exit).toBe(0);
+      expect(result.full).toStartWith(
+        "owner/repo has no merge brief (.agents/merge-brief.md on its default branch). /create-verification-skill writes one.\n\nWOULD MERGE: "
+      );
+    });
+
+    it("says the merge brief could not be read, and still merges", async () => {
+      const result = await gate({ failOn: "mergeBrief" }, []);
+      expect(result.exit).toBe(0);
+      expect(result.full).toStartWith(
+        "The merge brief for owner/repo (.agents/merge-brief.md) could not be read: unexpected error: mergeBrief failed\n\nMERGED: "
+      );
+      expect(merged(result.calls)).toBe(true);
+    });
   });
 });

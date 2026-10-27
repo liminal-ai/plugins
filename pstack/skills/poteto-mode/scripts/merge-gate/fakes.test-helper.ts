@@ -11,7 +11,12 @@ import type {
   PrRef,
   PullRequest,
 } from "./gate.ts";
-import type { GitHub, WriteAttempt, MergeReadBack } from "./github.ts";
+import type {
+  GitHub,
+  MergedPull,
+  MergeReadBack,
+  WriteAttempt,
+} from "./github.ts";
 import type { Runtime } from "./cli.ts";
 
 export const REPO = "owner/repo";
@@ -235,6 +240,10 @@ export interface FakeOptions {
   readonly merge?: WriteAttempt;
   readonly comment?: WriteAttempt;
   readonly readBack?: Partial<MergeReadBack>;
+  /** Each repo's merged PRs, by "<owner>/<name>". */
+  readonly mergedPulls?: Readonly<Record<string, readonly MergedPull[]>>;
+  /** The repo's merge brief; null when it has none. */
+  readonly mergeBrief?: string | null;
   readonly failOn?: keyof GitHub;
 }
 
@@ -250,6 +259,14 @@ export function fakeGitHub(
     calls.filter((call) => call.startsWith(`${name} `)).length > 1;
   return {
     calls,
+    async mergedPullRequests(repo, since) {
+      step("mergedPullRequests", repo, ` ${since}`);
+      return options.mergedPulls?.[`${repo.owner}/${repo.repo}`] ?? [];
+    },
+    async mergeBrief(repo) {
+      step("mergeBrief", repo);
+      return options.mergeBrief ?? null;
+    },
     async defaultBranch(repo) {
       step("defaultBranch", repo);
       return options.defaultBranch ?? "main";
@@ -267,6 +284,7 @@ export function fakeGitHub(
         baseRefName: "main",
         reviewDecision: null,
         autoMergeArmed: false,
+        body: "",
         ...options.pull,
         ...(later("pullRequest") ? options.atMerge?.pull : {}),
       };
@@ -318,8 +336,14 @@ export function fakeGitHub(
 export function runtimeFor(
   github: GitHub,
   cwd: string
-): Runtime & { readonly out: () => string; readonly store: string } {
+): Runtime & {
+  readonly out: () => string;
+  /** The output after the merge brief block that every run prints first. */
+  readonly decision: () => string;
+  readonly store: string;
+} {
   const chunks: string[] = [];
+  const out = () => chunks.join("");
   return {
     github,
     cwd,
@@ -327,6 +351,7 @@ export function runtimeFor(
     now: () => new Date("2026-10-17T12:00:00.000Z"),
     stdout: (text) => chunks.push(text),
     stderr: (text) => chunks.push(text),
-    out: () => chunks.join(""),
+    out,
+    decision: () => out().slice(out().indexOf("\n\n") + 2),
   };
 }

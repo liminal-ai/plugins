@@ -1,10 +1,10 @@
 import {
   type Facts,
   type HashResult,
-  type PlanBoxes,
+  type PlanRef,
   type PrRef,
   type VerdictFact,
-  type Waiver,
+  declaredPlan,
   findVerdictLine,
   hasVerdictLine,
   isInstructionFile,
@@ -15,14 +15,18 @@ import {
 import type { Git } from "./git.ts";
 import { ReadError } from "./git.ts";
 import type { GitHub } from "./github.ts";
+import { resolvePlan } from "./plan.ts";
 
 /** Reads every fact once. Throws on any read it cannot vouch for, so a read error never passes. */
 export async function readFacts(
   github: GitHub,
   git: Git,
   pr: PrRef,
-  plan: PlanBoxes | null = null,
-  waivers: readonly Waiver[] = []
+  asked: Pick<Facts, "waivers" | "checkWaivers"> & {
+    /** The plan --plan and --plan-pr pass, and the directory a relative plan path resolves from. */
+    readonly plan: PlanRef | null;
+    readonly cwd: string;
+  }
 ): Promise<Facts> {
   const remote = git.remoteFor(pr);
   const [defaultBranch, pull, comments] = await Promise.all([
@@ -31,6 +35,12 @@ export async function readFacts(
     github.issueComments(pr),
   ]);
   const head = pull.headRefOid;
+  const declared = declaredPlan(pull.body);
+  if (declared !== null && "malformed" in declared)
+    throw new ReadError(
+      `the PR body's plan declaration does not read as one pstack-plan: <plan file> pr=<PR id> line: ${declared.malformed}. Fix the body so the gate can check the plan.`
+    );
+  const plan = resolvePlan(asked.plan, declared, asked.cwd);
   const [checks, threads, baseUsesMergeQueue] = await Promise.all([
     github.checks(pr, head),
     github.openThreads(pr),
@@ -80,7 +90,8 @@ export async function readFacts(
     currentHash,
     verdict,
     plan,
-    waivers,
+    waivers: asked.waivers,
+    checkWaivers: asked.checkWaivers,
     instructionFiles:
       instructionPaths.length === 0
         ? null

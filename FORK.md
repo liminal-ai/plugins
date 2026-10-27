@@ -64,7 +64,7 @@ node --test pstack/skills/*/scripts/test/*.test.mjs                        # sta
 
 ## Deploying
 
-Installs are copies, so a merge changes nothing until a reinstall. Only the hourly audit ticks in autopilot-full, autopilot-stack and multi-phase-plan re-read playbooks from `origin/lim` (`check-plan.mjs` requires plans to include that re-read), so a merge without a reinstall splits running programs between new playbooks and old skills and scripts. Merge, then reinstall at once for each user with the install steps in `poteto-help` (rsync `pstack/skills/*` into `~/.agents/skills`, link `~/.claude/skills/<name>`, copy `pstack/agents`). Verify: `diff -r pstack/skills/<name> ~/.agents/skills/<name>`.
+Installs are copies, so a merge changes nothing until a reinstall. Only the hourly audit ticks in autopilot-full, autopilot-stack and multi-phase-plan re-read playbooks from `origin/lim` (`check-plan.mjs` requires plans to include that re-read), so a merge without a reinstall splits running programs between new playbooks and old skills and scripts. Merge through the merge gate (`merge-gate --repo liminal-ai/pstack-lim --pr <n>`, per poteto-mode's Shipping playbook), then reinstall at once for each user with the install steps in `poteto-help` (rsync `pstack/skills/*` into `~/.agents/skills`, link `~/.claude/skills/<name>`, copy `pstack/agents`). Verify: `diff -r pstack/skills/<name> ~/.agents/skills/<name>`.
 
 ## bun
 

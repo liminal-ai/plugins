@@ -5,7 +5,7 @@ description: "Generate a project-local verification skill that drives your app t
 
 # Create a verification skill
 
-Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local skill (`.agents/skills/verify-<app>/`) tailored to the repo. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent that has never seen the app.
+Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local skill (`.agents/skills/verify-<app>/`) tailored to the repo, and writes the repo's merge brief beside it. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent that has never seen the app.
 
 ## 1. Interview the repo, not the user
 
@@ -26,7 +26,7 @@ Write `.agents/skills/verify-<app>/SKILL.md` with YAML frontmatter (`name: verif
 - **Launch:** the exact command that starts the app for verification, and how to tell it's ready (a log line, a prompt). Launch must reach a usable state from an empty data dir, including any migrations and seed data. Ready means usable, not just that a process answers. A database health check can pass while its init scripts are still running. Include teardown. For a short-lived CLI or TUI there is no server to keep alive: launch means build the binary (or install deps) once, then start each drive in its own isolated PTY or tmux session.
 - **Doctor:** one read-only check that answers "is this instance worth driving?" — process up, right version/build, port owned by us, auth valid. An agent runs this first whenever anything looks off.
 - **Drive:** the harness recipe with real selectors/commands from this repo, not examples. Prefer stable handles (ARIA labels, data attributes, prompt strings, route paths) over coordinates and tab order.
-- **Evidence:** what to capture for a proof and where it goes. State the proof standards: exercise the real user path, not internal setters or test-only endpoints; capture the action and the resulting state, not just the final screen; verify side effects (files written, rows inserted, messages sent) alongside what's visible; mocks only where a production boundary already isolates the external system. When the safe path is a dry-run or test mode, verify what it actually skips by observing (files, network, git refs) rather than trusting its name: some dry-runs still touch the network or open a browser.
+- **Evidence:** what to capture for a proof and where it goes. State the proof standards: exercise the real user path, not internal setters or test-only endpoints; capture the action and the resulting state, not just the final screen; verify side effects (files written, rows inserted, messages sent) alongside what's visible; mocks only where a production boundary already isolates the external system. When the safe path is a dry-run or test mode, verify what it actually skips by observing (files, network, git refs) rather than trusting its name: some dry-runs still touch the network or open a browser. Name two kinds of check. A **user-only check** gets only what a user gets: the screen or terminal, the input devices, and the app's own help text. It never gets coordinates, selectors, or state read from the app's internals or source, because a check that knows where the door is cannot tell whether a user can find it. An **outcome check** runs beside it and reads the state the user cannot see (stored rows, files, logs) to grade whether the user's goal happened, because a blind driver that reports success can still be wrong.
 - **Cleanup:** how to tear down instances the run created. Never kill by process name; kill what you started. Cleanup removes instances and scratch state, never the evidence: proof artifacts survive the teardown, in a location the skill names.
 - **Helpers:** any script the skill ships is executable and its invocation is shown in the skill body. A helper the reader has to reverse-engineer is not a helper.
 
@@ -36,8 +36,19 @@ Create `.agents/skills/verify-<app>/features/README.md` plus one file per user-f
 
 ## 4. Prove the generated skill before handing it over
 
-Run its own instructions end to end once: launch, doctor, drive ONE mapped feature (one is enough; the map exists so later runs can cover the rest), capture evidence, clean up. After cleanup, confirm the evidence still exists at the named location — a cleanup that eats the proof fails this step. Fix what fails, and run the generated cleanup after every failed iteration too, so broken attempts don't strand processes and ports. A generated skill that was never executed is a draft, not a deliverable. If you proved it in a stand-in for the real target (a container in place of a fresh VM, a local stack in place of a remote one), list every setup step the stand-in did that the target will not. Those steps stay unverified until a run on the real target covers them.
+Run its own instructions end to end once: launch, doctor, drive ONE mapped feature (one is enough; the map exists so later runs can cover the rest), capture evidence, clean up. Drive that feature twice: once as the skill's normal drive, and once as a user-only check graded by an outcome check. When the user-only check fails where the normal drive passed, the gap is the app's or the help text's, so record it in that feature's `Gotchas` rather than giving the check more knowledge. After cleanup, confirm the evidence still exists at the named location — a cleanup that eats the proof fails this step. Fix what fails, and run the generated cleanup after every failed iteration too, so broken attempts don't strand processes and ports. A generated skill that was never executed is a draft, not a deliverable. If you proved it in a stand-in for the real target (a container in place of a fresh VM, a local stack in place of a remote one), list every setup step the stand-in did that the target will not. Those steps stay unverified until a run on the real target covers them.
 
-## 5. Offer the maintenance loop
+## 5. Write the merge brief
 
-Point the user at `/maintain-verification-skill` for keeping the map honest as the app changes. Suggest a cadence only if they ask.
+Write `.agents/merge-brief.md` at the repo root: the repo's own gates for merging, in under 20 lines, for an agent about to merge. The merge gate prints it on every run, and the `gh pr merge` wrapper prints it in place of merging. Ground every line in the repo. Name:
+
+- The gate command for this repo, with its merge method (`--method merge` when the repo requires merge commits).
+- The verify skill a verdict drives the change through, and which features a verdict must drive for which paths.
+- The repo's tests and checks that must pass, and any that CI doesn't run.
+- Anything else this repo requires before a merge, such as approval of instruction-file text, a release or cutover rule, or a migration check, each with where it is written.
+
+Write it as text an agent reads, not as a script the gate runs. Leave out pstack's general rules, which the gate already checks.
+
+## 6. Offer the maintenance loop
+
+Point the user at `/maintain-verification-skill` for keeping the map and the merge brief honest as the app changes. Suggest a cadence only if they ask.

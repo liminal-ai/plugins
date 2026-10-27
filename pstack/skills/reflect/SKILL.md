@@ -37,7 +37,7 @@ Everything this reflect produced goes in this thread's home in the pstack store.
 
 ## 5. Summarize for the user
 
-In a few lines, say what the reflect found and where it is saved (`<reflect folder>`). Raise a decision only when it is a product or ops call that cannot wait for the next round, such as a running service to stop or data at risk. Everything else waits for the round. Propose no skill edits, ask for no approvals, and file nothing.
+In a few lines, say what the reflect found and where it is saved (`<reflect folder>`). List the gaps it found in the project's verify skill and merge brief. The thread's closing upkeep pass (poteto-mode's Playbooks section) fixes those in the project. Raise a decision only when it is a product or ops call that cannot wait for the next round, such as a running service to stop or data at risk. Everything else waits for the round. Propose no pstack skill edits, ask for no approvals, and file nothing.
 
 ## Retro rounds
 

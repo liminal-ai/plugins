@@ -18,6 +18,10 @@ Scan for:
 - Debugging entry points: how to capture a trace, where logs land, which RPC to hit
 - Build / package-manager / sandbox surprises that cost minutes the first time
 
+## Lens addition: the project's verify skill and merge brief
+
+Note each moment the project's verify skill (usually `.agents/skills/verify-<app>/` in the repo) could not drive what the thread needed, drove it the wrong way, or went unused where a step called for it, and each gate the thread met at merge that the repo's merge brief (`.agents/merge-brief.md`) does not name. Report these in their own list, titled "Project verify skill and merge brief", with the file each one belongs in. They are the project's to fix in the thread's closing upkeep pass, not pstack's.
+
 ## What to report
 
 Report what happened, not lessons. For each observation:

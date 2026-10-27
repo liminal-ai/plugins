@@ -29,6 +29,17 @@ export interface MergeReadBack {
   readonly mergeCommit: string | null;
 }
 
+/** A PR GitHub reads as merged, with the head it last had. */
+export interface MergedPull {
+  readonly number: number;
+  readonly mergedAt: string;
+  readonly mergedBy: string | null;
+  readonly head: string;
+}
+
+/** gh pr list's ceiling; a list this long may be cut short. */
+const MERGED_LIMIT = 1000;
+
 export const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
 
@@ -37,6 +48,10 @@ export type WriteAttempt =
 
 /** The GitHub reads and the two writes the gate makes. Every call names the repo; gh never picks one. */
 export interface GitHub {
+  /** `.agents/merge-brief.md` on the default branch, or null when the repo has none. */
+  mergeBrief(repo: Repository): Promise<string | null>;
+  /** Every PR merged on or after the UTC date `since` (YYYY-MM-DD). */
+  mergedPullRequests(repo: Repository, since: string): Promise<readonly MergedPull[]>;
   defaultBranch(repo: Repository): Promise<string>;
   usesMergeQueue(repo: Repository, branch: string): Promise<boolean>;
   pullRequest(pr: PrRef): Promise<PullRequest>;
@@ -98,6 +113,8 @@ query MergeQueue($owner: String!, $repo: String!, $branch: String!) {
 
 /** Only "User" counts as a person; the others are GitHub's documented non-person account types. */
 const ACCOUNT_TYPES = new Set(["User", "Bot", "Organization", "Mannequin"]);
+
+export const MERGE_BRIEF = ".agents/merge-brief.md";
 
 const repoName = (repo: Repository): string => `${repo.owner}/${repo.repo}`;
 
@@ -201,6 +218,66 @@ function readError(detail: string): never {
 }
 
 export class GhGitHub implements GitHub {
+  async mergeBrief(repo: Repository): Promise<string | null> {
+    const result = await run([
+      "gh",
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw",
+      `repos/${repoName(repo)}/contents/${MERGE_BRIEF}`,
+    ]);
+    if (result.code === 0) return result.stdout;
+    if (result.stderr.includes("(HTTP 404)")) return null;
+    readError(firstLine(result.stderr) || `gh api exited ${result.code}`);
+  }
+
+  async mergedPullRequests(
+    repo: Repository,
+    since: string
+  ): Promise<readonly MergedPull[]> {
+    const value = list(
+      await runJson([
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repoName(repo),
+        "--state",
+        "merged",
+        "--search",
+        `merged:>=${since}`,
+        "--limit",
+        String(MERGED_LIMIT),
+        "--json",
+        "number,mergedAt,mergedBy,headRefOid",
+      ]),
+      "merged pull requests"
+    );
+    if (value.length >= MERGED_LIMIT)
+      readError(
+        `${repoName(repo)} has ${MERGED_LIMIT} or more merges since ${since}, more than one read lists. Pass a later --since.`
+      );
+    return value
+      .map((item) => {
+        const pull = record(item, "merged pull request");
+        if (typeof pull.number !== "number")
+          readError("merged pull request.number is not a number");
+        return {
+          number: pull.number,
+          mergedAt: string(pull.mergedAt, "merged pull request.mergedAt"),
+          mergedBy:
+            pull.mergedBy == null
+              ? null
+              : string(
+                  record(pull.mergedBy, "mergedBy").login,
+                  "mergedBy.login"
+                ),
+          head: string(pull.headRefOid, "merged pull request.headRefOid"),
+        };
+      })
+      .filter((pull) => pull.mergedAt.slice(0, 10) >= since);
+  }
+
   async defaultBranch(repo: Repository): Promise<string> {
     const value = await runJson([
       "gh",
@@ -231,7 +308,7 @@ export class GhGitHub implements GitHub {
         "--repo",
         repoName(pr),
         "--json",
-        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft,autoMergeRequest",
+        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft,autoMergeRequest,body",
       ]),
       "pull request"
     );
@@ -250,6 +327,7 @@ export class GhGitHub implements GitHub {
       headRefOid: facts.headRefOid,
       reviewDecision: facts.reviewDecision,
       autoMergeArmed: value.autoMergeRequest !== null,
+      body: string(value.body, "pull request.body"),
     };
   }
 

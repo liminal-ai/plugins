@@ -17,6 +17,7 @@ export interface PullRequest {
   readonly headRefOid: string;
   readonly reviewDecision: ReviewDecision;
   readonly autoMergeArmed: boolean;
+  readonly body: string;
 }
 
 /** `app` is the slug of the GitHub App whose check suite reported a check run; null for a commit status or an app GitHub does not name. */
@@ -66,9 +67,9 @@ export interface IgnoredVerdict {
   readonly url: string;
 }
 
-export type BoxStatus = "done" | "n/a" | "skipped";
+export type BoxStatus = "done" | "n/a" | "skipped" | "changed";
 
-/** One `box <id>: <status>. <note>` line under a verdict. */
+/** One `box <id>: <status>. <note>` line under a verdict. A changed box's note is `<who accepted the change>, <why>`. */
 export interface VerdictBox {
   readonly id: string;
   readonly status: BoxStatus;
@@ -80,6 +81,33 @@ export interface Waiver {
   readonly id: string;
   readonly reason: string;
 }
+
+/** A missing gate check the lead accepts, given as `--waive <check>=<reason>` on the run that merges. */
+export interface CheckWaiver {
+  readonly check: string;
+  readonly reason: string;
+}
+
+/** A plan file and the PR id that ends its section's title, as --plan and --plan-pr or a PR body's pstack-plan line give them. */
+export interface PlanRef {
+  readonly path: string;
+  readonly pr: string;
+}
+
+/** The plan the run checks: the one passed, else the one the PR body declares. */
+export type PlanFact =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "read";
+      readonly boxes: PlanBoxes;
+      readonly declared: boolean;
+    }
+  | { readonly kind: "declared-missing"; readonly declared: PlanRef }
+  | {
+      readonly kind: "mismatch";
+      readonly declared: PlanRef;
+      readonly passed: PlanRef;
+    };
 
 /** The required verify boxes of the PR's section in its plan, as check-plan.mjs names them. */
 export interface PlanBoxes {
@@ -120,13 +148,18 @@ export interface Facts {
   readonly mergeBase: string;
   readonly currentHash: HashResult;
   readonly verdict: VerdictFact;
-  readonly plan: PlanBoxes | null;
+  readonly plan: PlanFact;
   readonly waivers: readonly Waiver[];
+  readonly checkWaivers: readonly CheckWaiver[];
   readonly instructionFiles: InstructionFiles | null;
 }
 
 export type Result =
-  | { readonly met: true; readonly note: string }
+  | {
+      readonly met: true;
+      readonly note: string;
+      readonly details?: readonly string[];
+    }
   | {
       readonly met: false;
       readonly missing: string;
@@ -135,11 +168,14 @@ export type Result =
 
 export interface Requirement {
   readonly name: string;
+  /** The id a lead names in `--waive <id>=<reason>`; absent for a check no lead may waive. */
+  readonly waiver?: string;
   readonly evaluate: (facts: Facts) => Result;
 }
 
 export interface Evaluation {
   readonly name: string;
+  readonly waiver?: string;
   readonly result: Result;
 }
 
@@ -147,8 +183,11 @@ const VERDICT_PREFIX = "pstack-verdict:";
 const VERDICT_LINE =
   /^pstack-verdict: (PASS\+NOTES|PASS|FAIL) head=([0-9a-f]{40}) base=([0-9a-f]{40}) by=(\S+)$/;
 export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
-const BOX_LINE = /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped)(?:\. (.*))?$/;
+const BOX_LINE =
+  /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped|changed)(?:\. (.*))?$/;
 const BOX_PREFIX = /^(?:[-*] )?box /;
+const PLAN_PREFIX = "pstack-plan:";
+const PLAN_DECLARATION = /^pstack-plan: (\S(?:.*\S)?) pr=(\S+)$/;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
 const APPROVED_IN = /^approved-in: \S+$/;
 const CODEX_LOGINS = new Set([
@@ -233,21 +272,58 @@ export function parseBoxLines(below: readonly string[]): {
   return { boxes, unread };
 }
 
-/** Each waiver that names a box the verdict did not skip; the run that gave it is a usage error. */
-export function strayWaivers(
-  verdict: VerdictFact,
-  waivers: readonly Waiver[]
-): string[] {
-  if (verdict.kind !== "found") return [];
-  const skipped = new Set(
-    verdict.boxes.filter((box) => box.status === "skipped").map((box) => box.id)
-  );
-  return waivers
-    .filter((waiver) => !skipped.has(waiver.id))
-    .map(
-      (waiver) =>
-        `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
-    );
+/**
+ * The PR body's one `pstack-plan: <path> pr=<id>` line; the path may hold spaces. Any line that starts
+ * `pstack-plan:`, in a code block or not, counts. Two of them, or one that does not parse, come back as
+ * `{ malformed }`, so no declared plan is ever dropped or outranked silently.
+ */
+export function declaredPlan(
+  body: string
+): PlanRef | { readonly malformed: string } | null {
+  const declared = lines(body).filter((line) => line.startsWith(PLAN_PREFIX));
+  if (declared.length === 0) return null;
+  if (declared.length > 1)
+    return { malformed: `${declared.length} plan lines (${declared.join(" | ")}); a PR declares one plan` };
+  const match = PLAN_DECLARATION.exec(declared[0]);
+  return match === null ? { malformed: declared[0] } : { path: match[1], pr: match[2] };
+}
+
+/** Who accepted a changed bar and why, read from the note `<who>, <why>`; null unless both are there. */
+export function barChange(
+  note: string
+): { readonly who: string; readonly why: string } | null {
+  const at = note.indexOf(",");
+  const who = note.slice(0, at).trim();
+  const why = note.slice(at + 1).trim();
+  return at === -1 || who === "" || why === "" ? null : { who, why };
+}
+
+/** Each waiver for a box the verdict did not skip or a check that holds; the run that gave it is a usage error. */
+export function strayWaivers(facts: Facts): string[] {
+  const { verdict } = facts;
+  const boxes =
+    verdict.kind !== "found"
+      ? []
+      : facts.waivers
+          .filter(
+            (waiver) =>
+              !verdict.boxes.some(
+                (box) => box.id === waiver.id && box.status === "skipped"
+              )
+          )
+          .map(
+            (waiver) =>
+              `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
+          );
+  const checks = facts.checkWaivers.flatMap((waiver) => {
+    const requirement = REQUIREMENTS.find((r) => r.waiver === waiver.check);
+    return requirement === undefined || !requirement.evaluate(facts).met
+      ? []
+      : [
+          `--waive ${waiver.check}: ${requirement.name} is met, so there is nothing to waive`,
+        ];
+  });
+  return [...boxes, ...checks];
 }
 
 export function parseVerdictLine(line: string): {
@@ -271,7 +347,11 @@ export const isInstructionFile = (path: string): boolean => {
   return name === "agents.md" || name === "claude.md";
 };
 
-const met = (note: string): Result => ({ met: true, note });
+const met = (note: string, details?: readonly string[]): Result => ({
+  met: true,
+  note,
+  ...(details === undefined ? {} : { details }),
+});
 const unmet = (missing: string, details?: readonly string[]): Result => ({
   met: false,
   missing,
@@ -320,6 +400,7 @@ const autoMerge: Requirement = {
 
 const checks: Requirement = {
   name: "Checks",
+  waiver: "checks",
   evaluate({ checks: all }) {
     const counted = all.filter((check) => !isBugbot(check));
     const ignored = all.length - counted.length;
@@ -346,6 +427,7 @@ const checks: Requirement = {
 
 const reviewThreads: Requirement = {
   name: "Review threads",
+  waiver: "threads",
   evaluate({ threads }) {
     if (threads.length === 0) return met("none open");
     return unmet(
@@ -415,22 +497,46 @@ const verdict: Requirement = {
   },
 };
 
-const BOX_FORMS =
-  '"box <id>: done", "box <id>: n/a. <reason>" or "box <id>: skipped. <what did not run>"';
+export const BOX_FORMS =
+  '"box <id>: done", "box <id>: n/a. <reason>", "box <id>: skipped. <what did not run>" or "box <id>: changed. <who accepted the changed bar>, <why>"';
 
 const planBoxes: Requirement = {
   name: "Plan boxes",
-  evaluate({ verdict: fact, plan, waivers }) {
+  evaluate({ verdict: fact, plan: planFact, waivers }) {
+    if (planFact.kind === "declared-missing") {
+      const { path, pr } = planFact.declared;
+      return unmet(
+        `The PR body declares the plan ${path} for ${pr}, and it is not on this machine. Run the gate from where that path resolves, or pass the plan's path here:`,
+        [`--plan ${path} --plan-pr ${pr}`]
+      );
+    }
+    if (planFact.kind === "mismatch") {
+      const { declared, passed } = planFact;
+      return unmet(
+        "--plan and --plan-pr name another plan than the PR body declares. Pass the declared plan, or fix the PR body's pstack-plan line:",
+        [
+          `declared: pstack-plan: ${declared.path} pr=${declared.pr}`,
+          `passed: --plan ${passed.path} --plan-pr ${passed.pr}`,
+        ]
+      );
+    }
+    const plan = planFact.kind === "read" ? planFact.boxes : null;
+    const noPlan =
+      planFact.kind === "none"
+        ? ["No plan checked: the PR declares none and none was passed."]
+        : [];
     if (fact.kind !== "found")
-      return met("no verdict to read; see Independent verdict");
+      return met("no verdict to read; see Independent verdict", noPlan);
     const listed = new Set(fact.boxes.map((box) => box.id));
     const repeated = [...listed].filter(
       (id) => fact.boxes.filter((box) => box.id === id).length > 1
     );
     const omitted = (plan?.ids ?? []).filter((id) => !listed.has(id));
     const noReason = fact.boxes.filter(
-      (box) => box.status !== "done" && box.note === ""
+      (box) => (box.status === "n/a" || box.status === "skipped") && box.note === ""
     );
+    const changed = fact.boxes.filter((box) => box.status === "changed");
+    const unowned = changed.filter((box) => barChange(box.note) === null);
     // Every agent posts as the same GitHub account, so no comment can say the lead accepted a skip; only the lead's own gate run can.
     const waived = new Set(waivers.map((waiver) => waiver.id));
     const unwaived = fact.boxes.filter(
@@ -462,6 +568,12 @@ const planBoxes: Requirement = {
       );
       details.push(`no reason: ${noReason.map((box) => box.id).join(" ")}`);
     }
+    if (unowned.length > 0) {
+      parts.push(
+        `${unowned.length} changed box${unowned.length === 1 ? " does" : "es do"} not name who accepted the changed bar and why. Have the verifier write "box <id>: changed. <who>, <why>"`
+      );
+      details.push(`no who and why: ${unowned.map((box) => box.id).join(" ")}`);
+    }
     if (unwaived.length > 0) {
       parts.push(
         `${unwaived.length} skipped box${unwaived.length === 1 ? " is" : "es are"} not waived by the lead, so the verdict is not a pass. Run the box and get a new verdict, or, if the lead accepts the skip, the lead runs the gate with "--accept-skip <id>=<reason>"`
@@ -474,13 +586,33 @@ const planBoxes: Requirement = {
     const scope =
       plan === null
         ? `no plan given, ${fact.boxes.length} box${fact.boxes.length === 1 ? "" : "es"} listed`
-        : `all ${plan.ids.length} required boxes of ${plan.pr} listed`;
-    return met(skipped === 0 ? scope : `${scope}, ${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`);
+        : `all ${plan.ids.length} required boxes of ${plan.pr} listed${planFact.kind === "read" && planFact.declared ? `, from the plan the PR body declares` : ""}`;
+    const notes = [
+      scope,
+      ...(skipped === 0
+        ? []
+        : [`${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`]),
+      ...(changed.length === 0
+        ? []
+        : [`${changed.length} bar${changed.length === 1 ? "" : "s"} changed`]),
+    ];
+    const changes = changed.flatMap((box) => {
+      const change = barChange(box.note);
+      return change === null
+        ? []
+        : [`changed: box ${box.id}, accepted by ${change.who}: ${change.why}`];
+    });
+    const notesBelow = [...noPlan, ...changes];
+    return met(
+      notes.join(", "),
+      notesBelow.length === 0 ? undefined : notesBelow
+    );
   },
 };
 
 const codexReview: Requirement = {
   name: "Codex review",
+  waiver: "codex",
   evaluate({ comments, pull }) {
     const ask =
       'Comment "@codex review" on the PR and wait for Codex\'s summary comment to name this head.';
@@ -554,11 +686,27 @@ export const REQUIREMENTS: readonly Requirement[] = [
   instructionApproval,
 ];
 
+export const WAIVABLE_CHECKS: readonly string[] = REQUIREMENTS.flatMap(
+  (requirement) => (requirement.waiver === undefined ? [] : [requirement.waiver])
+);
+
+/** Each requirement's result, a missing check the lead waived counting as met with its reason. */
 export const evaluate = (facts: Facts): readonly Evaluation[] =>
-  REQUIREMENTS.map((requirement) => ({
-    name: requirement.name,
-    result: requirement.evaluate(facts),
-  }));
+  REQUIREMENTS.map(({ name, waiver, evaluate: judge }) => {
+    const result = judge(facts);
+    const waived = facts.checkWaivers.find((entry) => entry.check === waiver);
+    return {
+      name,
+      waiver,
+      result:
+        result.met || waived === undefined
+          ? result
+          : met(
+              `waived by the lead: ${waived.reason}; unmet: ${result.missing}`,
+              result.details
+            ),
+    };
+  });
 
 export const missingNames = (evaluations: readonly Evaluation[]): string[] =>
   evaluations.filter((entry) => !entry.result.met).map((entry) => entry.name);
@@ -568,12 +716,19 @@ export function renderEvaluations(
   evaluations: readonly Evaluation[]
 ): string {
   const out = [header];
-  for (const { name, result } of evaluations) {
+  for (const { name, waiver, result } of evaluations) {
     if (result.met) continue;
     out.push(`missing: ${name}. ${result.missing}`);
     for (const detail of result.details ?? []) out.push(`  ${detail}`);
+    if (waiver !== undefined)
+      out.push(
+        `  If the lead accepts merging without it, the lead runs the gate with --waive ${waiver}=<reason>.`
+      );
   }
-  for (const { name, result } of evaluations)
-    if (result.met) out.push(`met: ${name} (${result.note})`);
+  for (const { name, result } of evaluations) {
+    if (!result.met) continue;
+    out.push(`met: ${name} (${result.note})`);
+    for (const detail of result.details ?? []) out.push(`  ${detail}`);
+  }
   return `${out.join("\n")}\n`;
 }
