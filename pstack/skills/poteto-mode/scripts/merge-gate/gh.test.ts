@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +22,10 @@ case "$*" in
   "pr view"*) cat "$FAKE_GH_DIR/pr.json" ;;
   "pr merge"*) ;;
   "pr comment"*) ;;
+  *"repos/broken/repo/contents/"*) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;
+  *"contents/.agents/merge-brief.md")
+    if [ -f "$FAKE_GH_DIR/merge-brief.md" ]; then cat "$FAKE_GH_DIR/merge-brief.md"
+    else echo '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   "api --paginate"*) cat "$FAKE_GH_DIR/comments.json" ;;
   *HeadChecks*) cat "$FAKE_GH_DIR/checks.json" ;;
   *OpenThreads*) cat "$FAKE_GH_DIR/threads.json" ;;
@@ -166,7 +171,7 @@ afterAll(() => {
 it("reads and merges through gh, naming the repo on every call", async () => {
   const runtime = runtimeFor(new GhGitHub(), repos.gate);
   const exit = await main(["--repo", "owner/repo", "--pr", "1"], runtime);
-  expect(runtime.out().split("\n")[0]).toBe(
+  expect(runtime.decision().split("\n")[0]).toBe(
     `MERGED: owner/repo#1 at ${repos.head.slice(0, 7)} into main as aaaaaaa`
   );
   expect(exit).toBe(0);
@@ -178,7 +183,7 @@ it("reads and merges through gh, naming the repo on every call", async () => {
         .split("\0")
         .slice(0, -1)
     );
-  expect(calls.length).toBe(14);
+  expect(calls.length).toBe(15);
   for (const argv of calls) {
     const names = argv.includes("--repo")
       ? argv[argv.indexOf("--repo") + 1] === "owner/repo"
@@ -263,7 +268,7 @@ async function checkWith(name: string, value: unknown) {
   try {
     const runtime = runtimeFor(new GhGitHub(), repos.gate);
     const exit = await main(["--repo", "owner/repo", "--pr", "1"], runtime);
-    return { exit, out: runtime.out() };
+    return { exit, out: runtime.decision() };
   } finally {
     writeFileSync(path, saved);
   }
@@ -719,4 +724,22 @@ it("counts every run of a check from outside GitHub Actions", async () => {
   );
   expect(result.exit).toBe(1);
   expect(result.out).toContain("missing: Checks. 1 failed (lint)");
+});
+
+it("reads the merge brief raw from the default branch, null when GitHub has none", async () => {
+  const github = new GhGitHub();
+  const repo = { owner: "owner", repo: "repo" };
+  expect(await github.mergeBrief(repo)).toBeNull();
+  writeFileSync(join(dir, "merge-brief.md"), "# Merging\n");
+  try {
+    expect(await github.mergeBrief(repo)).toBe("# Merging\n");
+  } finally {
+    rmSync(join(dir, "merge-brief.md"));
+  }
+});
+
+it("throws when the merge brief read fails for any reason but a 404", async () => {
+  await expect(
+    new GhGitHub().mergeBrief({ owner: "broken", repo: "repo" })
+  ).rejects.toThrow("gh: Server Error (HTTP 502)");
 });

@@ -48,13 +48,13 @@ async function gate(
   });
   const runtime = runtimeFor(github, repos.gate);
   const exit = await main(["--repo", REPO, "--pr", "1", ...flags], runtime);
-  const out = runtime.out();
+  const out = runtime.decision();
   const missing = out
     .split("\n")
     .filter((line) => line.startsWith("missing: "));
   const log = () =>
     readFileSync(join(runtime.store, "merge-gate", "runs.tsv"), "utf8");
-  return { exit, out, missing, calls: github.calls, log };
+  return { exit, out, full: runtime.out(), missing, calls: github.calls, log };
 }
 
 const merged = (calls: readonly string[]) =>
@@ -885,7 +885,7 @@ describe("merge-gate", () => {
       const exit = await main(["--repo", "other/repo", "--pr", "1"], runtime);
       expect(exit).toBe(2);
       expect(runtime.out()).toContain("no git remote in");
-      expect(github.calls).toEqual([]);
+      expect(github.calls).toEqual(["mergeBrief other/repo"]);
     });
   });
 
@@ -1049,7 +1049,10 @@ describe("merge-gate", () => {
     });
     const runtime = runtimeFor(github, repos.gate);
     expect(await main(["--pr", "1", "--check"], runtime)).toBe(0);
-    expect(github.calls[0]).toStartWith("defaultBranch owner/repo");
+    expect(github.calls.slice(0, 2)).toEqual([
+      "mergeBrief owner/repo",
+      "defaultBranch owner/repo",
+    ]);
   });
 
   it("logs a usage error with whatever context it has", async () => {
@@ -1101,5 +1104,36 @@ describe("merge-gate", () => {
     expect(await main(["--check"], runtime)).toBe(2);
     expect(await main(["--pr", "abc"], runtime)).toBe(2);
     expect(await main(["--pr", "1", "--repo", "noslash"], runtime)).toBe(2);
+  });
+  describe("merge brief", () => {
+    it("prints the repo's merge brief first, on a check or a refusal", async () => {
+      for (const options of [{}, { checks: [failing("build")] }]) {
+        const result = await gate({
+          ...options,
+          mergeBrief: "# Merging owner/repo\n- Run the e2e suite first.\n",
+        });
+        expect(result.full).toStartWith(
+          "Merge brief for owner/repo:\n# Merging owner/repo\n- Run the e2e suite first.\n\n"
+        );
+        expect(result.calls[0]).toBe("mergeBrief owner/repo");
+      }
+    });
+
+    it("says the repo has no merge brief and what writes one", async () => {
+      const result = await gate({ mergeBrief: null });
+      expect(result.exit).toBe(0);
+      expect(result.full).toStartWith(
+        "owner/repo has no merge brief (.agents/merge-brief.md on its default branch). /create-verification-skill writes one.\n\nWOULD MERGE: "
+      );
+    });
+
+    it("says the merge brief could not be read, and still merges", async () => {
+      const result = await gate({ failOn: "mergeBrief" }, []);
+      expect(result.exit).toBe(0);
+      expect(result.full).toStartWith(
+        "The merge brief for owner/repo (.agents/merge-brief.md) could not be read: unexpected error: mergeBrief failed\n\nMERGED: "
+      );
+      expect(merged(result.calls)).toBe(true);
+    });
   });
 });

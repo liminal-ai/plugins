@@ -37,6 +37,8 @@ export type WriteAttempt =
 
 /** The GitHub reads and the two writes the gate makes. Every call names the repo; gh never picks one. */
 export interface GitHub {
+  /** `.agents/merge-brief.md` on the default branch, or null when the repo has none. */
+  mergeBrief(repo: Repository): Promise<string | null>;
   defaultBranch(repo: Repository): Promise<string>;
   usesMergeQueue(repo: Repository, branch: string): Promise<boolean>;
   pullRequest(pr: PrRef): Promise<PullRequest>;
@@ -98,6 +100,8 @@ query MergeQueue($owner: String!, $repo: String!, $branch: String!) {
 
 /** Only "User" counts as a person; the others are GitHub's documented non-person account types. */
 const ACCOUNT_TYPES = new Set(["User", "Bot", "Organization", "Mannequin"]);
+
+export const MERGE_BRIEF = ".agents/merge-brief.md";
 
 const repoName = (repo: Repository): string => `${repo.owner}/${repo.repo}`;
 
@@ -201,6 +205,21 @@ function readError(detail: string): never {
 }
 
 export class GhGitHub implements GitHub {
+  async mergeBrief(repo: Repository): Promise<string | null> {
+    const result = await run([
+      "gh",
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw",
+      `repos/${repoName(repo)}/contents/${MERGE_BRIEF}`,
+    ]);
+    if (result.code === 0) return result.stdout;
+    if (result.stderr.includes("(HTTP 404)")) return null;
+    readError(
+      firstLine(result.stderr) || `gh api exited ${result.code}`
+    );
+  }
+
   async defaultBranch(repo: Repository): Promise<string> {
     const value = await runJson([
       "gh",

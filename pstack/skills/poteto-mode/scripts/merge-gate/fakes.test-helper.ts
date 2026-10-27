@@ -235,6 +235,8 @@ export interface FakeOptions {
   readonly merge?: WriteAttempt;
   readonly comment?: WriteAttempt;
   readonly readBack?: Partial<MergeReadBack>;
+  /** The repo's merge brief; null when it has none. */
+  readonly mergeBrief?: string | null;
   readonly failOn?: keyof GitHub;
 }
 
@@ -250,6 +252,10 @@ export function fakeGitHub(
     calls.filter((call) => call.startsWith(`${name} `)).length > 1;
   return {
     calls,
+    async mergeBrief(repo) {
+      step("mergeBrief", repo);
+      return options.mergeBrief ?? null;
+    },
     async defaultBranch(repo) {
       step("defaultBranch", repo);
       return options.defaultBranch ?? "main";
@@ -318,8 +324,14 @@ export function fakeGitHub(
 export function runtimeFor(
   github: GitHub,
   cwd: string
-): Runtime & { readonly out: () => string; readonly store: string } {
+): Runtime & {
+  readonly out: () => string;
+  /** The output after the merge brief block that every run prints first. */
+  readonly decision: () => string;
+  readonly store: string;
+} {
   const chunks: string[] = [];
+  const out = () => chunks.join("");
   return {
     github,
     cwd,
@@ -327,6 +339,7 @@ export function runtimeFor(
     now: () => new Date("2026-10-17T12:00:00.000Z"),
     stdout: (text) => chunks.push(text),
     stderr: (text) => chunks.push(text),
-    out: () => chunks.join(""),
+    out,
+    decision: () => out().slice(out().indexOf("\n\n") + 2),
   };
 }

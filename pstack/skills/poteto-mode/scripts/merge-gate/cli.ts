@@ -32,6 +32,7 @@ import { Git, ReadError } from "./git.ts";
 import {
   GhGitHub,
   type GitHub,
+  MERGE_BRIEF,
   MERGE_METHODS,
   type WriteAttempt,
   type MergeMethod,
@@ -109,7 +110,7 @@ function collectWaiver(value: string, previous: readonly Waiver[]): Waiver[] {
 function parseArgs(argv: readonly string[], runtime: Runtime): Options {
   const program = new Command("merge-gate")
     .description(
-      "Merge a PR only when every merge requirement holds at its current head.\nExit 0 merged (or would merge, with --check), 1 refused, 2 usage or read error."
+      "Merge a PR only when every merge requirement holds at its current head.\nFirst prints the repo's merge brief, .agents/merge-brief.md on its default branch.\nExit 0 merged (or would merge, with --check), 1 refused, 2 usage or read error."
     )
     .configureOutput({ writeOut: runtime.stdout, writeErr: runtime.stderr })
     .exitOverride()
@@ -224,6 +225,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     pr = { ...repo, number: options.pr };
     label = `${repo.owner}/${repo.repo}#${pr.number}`;
     base = { ...base, repo: `${repo.owner}/${repo.repo}` };
+    runtime.stdout(await mergeBrief(runtime.github, repo));
     if (options.plan !== null)
       plan = readPlanBoxes(options.plan.path, options.plan.pr);
     facts = await readFacts(runtime.github, git, pr, plan, options.waivers);
@@ -352,6 +354,19 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
       ? `The merge command succeeded but the PR is not merged into ${facts.defaultBranch}. It may be queued or set to auto-merge. ${read}`
       : `The merge command failed: ${attempt.detail}. ${read}`
   );
+}
+
+/** The repo's own merge rules, printed before any verdict; a failed read is reported and never blocks. */
+async function mergeBrief(github: GitHub, repo: Repository): Promise<string> {
+  const name = `${repo.owner}/${repo.repo}`;
+  try {
+    const text = await github.mergeBrief(repo);
+    if (text === null)
+      return `${name} has no merge brief (${MERGE_BRIEF} on its default branch). /create-verification-skill writes one.\n\n`;
+    return `Merge brief for ${name}:\n${text.trimEnd()}\n\n`;
+  } catch (error) {
+    return `The merge brief for ${name} (${MERGE_BRIEF}) could not be read: ${message(error)}\n\n`;
+  }
 }
 
 function waiverComment(
