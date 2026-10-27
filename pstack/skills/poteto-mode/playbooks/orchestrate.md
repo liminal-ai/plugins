@@ -41,7 +41,7 @@ SCOPE        paths this unit may write; paths it may not; its exclusive worktree
 CONTEXT      pointers to files and PRs; upstream reports pasted in full when this unit
              depends on them, because workers cannot see siblings
 ACCEPTANCE   checkable criteria, one per line
-VERIFY       exact commands or the control-skill path, plus known gotchas
+VERIFY       exact commands or the project's verify skill, plus known gotchas
 TIMEBOX      rough cap on runtime; on expiry, return partial findings and stop rather than run on
 FORBIDDEN    no PR retargets or merges, no rebase, no force-push, no fixes outside scope,
              plus unit-specific bans

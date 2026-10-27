@@ -5,7 +5,8 @@ import { MODEL_BLOCK, SUB_BLOCKS, blocks, boxes, planLines, verifyBoxIds } from 
 
 const RULE =
 	"Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.";
-const LANES = /Ten lanes on `[^`<>]+` at the PR head/;
+// "Ten lanes" is the fixed count plans used before the lane count followed the PR. Those plans keep passing.
+const LANES = /(?:Lanes on `[^`<>]+` at the PR head, driven through `[^`<>]+`|Ten lanes on `[^`<>]+` at the PR head)/;
 // The template writes this sentence. A plan without it predates the later-work record, so its checks stay as they were.
 const RECORD_OF_DONE = "This plan is the record of done.";
 const LATER_WORK_TITLE = "Appendix. Later work and scope cuts";
@@ -123,10 +124,12 @@ for (const pr of prSections) {
 
 	const live = block("Verify, live.");
 	if (live) {
-		if (!LANES.test(live.rest)) fail(live.n, `${pr.title}: Verify, live lacks "Ten lanes on \`<swarm workers model>\` at the PR head" with the model filled in`);
+		if (!LANES.test(live.rest)) fail(live.n, `${pr.title}: Verify, live lacks "Lanes on \`<swarm workers model>\` at the PR head, driven through \`<verify skill>\`" with both filled in`);
 		const lanes = topBoxes(live.lines).map((b) => ({ ...b, m: b.text.match(/^Lane (\d+)\. /) }));
 		const numbers = lanes.filter((b) => b.m).map((b) => Number(b.m[1])).sort((a, b) => a - b);
-		if (numbers.join(",") !== "1,2,3,4,5,6,7,8,9,10") fail(live.n, `${pr.title}: lanes are [${numbers.join(",")}], expected 1 to 10`);
+		const expected = numbers.map((_, i) => i + 1).join(",");
+		if (numbers.length === 0) fail(live.n, `${pr.title}: Verify, live has no lane`);
+		else if (numbers.join(",") !== expected) fail(live.n, `${pr.title}: lanes are [${numbers.join(",")}], expected 1 to ${numbers.length} with no gap or repeat`);
 		for (const lane of lanes) {
 			if (!lane.m) fail(lane.n, `${pr.title}: live box is not a lane`);
 			else if (!/Save `[^`]+`/.test(lane.text)) fail(lane.n, `${pr.title}: lane ${lane.m[1]} names no screenshot`);

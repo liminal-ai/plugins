@@ -35,7 +35,7 @@ ${recordOfDone}
 - [ ] Do the thing.
 **Verify, unit.** ${rule}
 - [ ] Check the thing.
-**Verify, live.** ${rule} Ten lanes on \`example-model\` at the PR head
+**Verify, live.** ${rule} Lanes on \`example-model\` at the PR head, driven through \`verify-example\`.
 ${Array.from({ length: 10 }, (_, i) => `- [ ] Lane ${i + 1}. Save \`lane-${i + 1}.png\`. Pass when evidence exists.`).join("\n")}
 **Verify, perf.** ${rule}
 - [ ] Metric. Recorded.
@@ -201,4 +201,18 @@ test("checks prose following a multi-backtick span and unmatched delimiters", ()
 	expect(outside.stderr).toContain("mid-sentence colon");
 	const unmatched = runPlan("Use ``unclosed: bad` here.\n", 1);
 	expect(unmatched.stderr).toContain("mid-sentence colon");
+});
+
+test("sizes the live lanes to the PR, numbered 1 to n with no gap", () => {
+	const three = validPlan.replace(/(- \[ \] Lane 3\..*\n)(?:- \[ \] Lane \d+\..*\n)+/, "$1");
+	expect(runText(three, 0).stdout).toContain("verdict boxes: unit-1 live-1 live-2 live-3 perf\n");
+	const gap = runText(validPlan.replace(`${lane(4)}\n`, ""), 1);
+	expect(gap.stderr).toContain("lanes are [1,2,3,5,6,7,8,9,10], expected 1 to 9 with no gap or repeat");
+});
+
+test("requires the live block to name its model and the verify skill that drives it", () => {
+	const unnamed = runText(validPlan.replace(", driven through `verify-example`.", "."), 1);
+	expect(unnamed.stderr).toContain("driven through");
+	const legacy = runText(validPlan.replace("Lanes on `example-model` at the PR head, driven through `verify-example`.", "Ten lanes on `example-model` at the PR head."), 0);
+	expect(legacy.stderr).toBe("");
 });
