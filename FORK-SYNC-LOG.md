@@ -57,3 +57,26 @@ All in PR #24. Lee's call in the 2026-10-20 retro: take everything, sharpen incl
 | `7b353f7` | pstack: add maintain-formal-verification-skill (#716) | adapt | #24 | description ends with the named-only sentence, no disable-model-invocation (Skill visibility row) |
 | `d457567` | chore(pstack): bump to 0.15.28, sync guide with create-formal-verification-skill (#724) | adapt | #24 | guide line taken, version bump left out |
 | `88d4751` | pstack: restore /sharpen to the original prompt, return only the rewrite (#729) | adapt | #24 | sharpen replaced with upstream's rewrite-the-prompt version over the fork's do-the-work version. Description keeps the named-only ending (Skill visibility row). Version bump left out |
+
+## Sync 3: f2bad52 to ab69380 (pstack 0.15.29 to 0.15.32)
+
+Decided in retro round 2026-10-26, stop 9. Upstream `main` was `ab69380` at the sync. Its last commit under `pstack/` is `e73df47`. Upstream's `harness/` copies are left out (Install row).
+
+| Upstream | Subject | Decision | PR | Reason |
+|---|---|---|---|---|
+| `eb4db2b` | feat(pstack): add the statechart skill to draw TLA+ models as charts (#741) | adapt | this | skill taken at upstream's tip with 7698375, 4ec7ffa and 076f4b2. Visible, the description ends with the named-only sentence, no disable-model-invocation (Skill visibility row). The hand-off embeds each PNG as `![alt](path)` (Visuals row). README, guide 06 and poteto-help rows taken. Upstream's CI step that runs `pstack/skills/*/scripts/test/*.test.mjs` is replaced by a line in FORK.md's checks, because the fork's CI only validates plugin manifests |
+| `7698375` | fix(pstack): bring the statechart skill up to date with six fixes (#776) | take | this | taken with eb4db2b at upstream's tip |
+| `4ec7ffa` | refactor(pstack): delete statechart comments that repeat the code, and rename helpers (#779) | take | this | taken with eb4db2b at upstream's tip |
+| `076f4b2` | feat(pstack): bring the statechart skill up to date, with the Pele renderer (#791) | take | this | taken with eb4db2b at upstream's tip |
+| `642289e` | chore(pstack): bump to 0.15.31 (#792) | skip |  | version bump |
+| `00d5dec` | feat(pstack): tell generated verify skills to read each model-check result with /statechart (#794) | take | this | paragraph added to create-formal-verification-skill unchanged |
+| `3c0fdb4` | feat(pstack): add the ketchup-video skill (#797) | skip |  | Lee's round 2026-10-26 list leaves it out. README, guide 10 and poteto-help rows left out with it |
+| `b1a1298` | chore(pstack): bump to 0.15.32 (#798) | skip |  | version bump |
+| `7054003` | fix(pstack): route reflect edits out of the plugin cache (#800) | skip |  | the fork's reflect records only and applies nothing. The retro round edits the source per FORK.md |
+| `96dec8e` | fix(watch-pr): distinguish fork heads during stack discovery (#801) | take | this | applied to `pstack/` unchanged |
+| `fe096ef` | fix(watch-pr): cap polling sleeps at the deadline (#802) | take | this | applied to `pstack/` unchanged |
+| `86c2448` | fix(pstack): recognize matching inline code delimiters (#803) | take | this | check-plan.mjs unchanged. Its two tests sit after the fork's record-of-done tests |
+| `3c596e7` | fix(orch): prefer active PR over branch history (#804) | adapt | this | the fork's resolver from sync 1 already prefers the unique open PR and falls back to `--prs` among merged or closed ones, so store.ts keeps the fork's code. Upstream's two tests are taken and pass. The duplicate-open test expects the fork's message, "several open pull requests" |
+| `f83fbe6` | fix(pstack): read transcript mtimes with GNU stat and date in worktree-audit (#805) | skip |  | the fork's worktree-audit reads T3 thread rows from `--threads` with `date -d`, not transcript mtimes with `stat`, so the code it fixes is not in the fork |
+| `a0b0ad9` | docs(pstack): note Claude Code auto-update is off for third-party marketplaces (#806) | skip |  | Claude Code marketplace install text (Install row) |
+| `e73df47` | fix(pstack): renumber swarm's Phase A and fix its dangling table reference (#807) | adapt | this | the fork's Phase A already runs 1 to 5 with step 3 restored in sync 1, and Phase B already points at step 4. Only Phase D's "a result table" is taken |
