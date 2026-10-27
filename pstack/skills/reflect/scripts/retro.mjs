@@ -16,7 +16,8 @@ const USAGE = `usage: retro.mjs <command>
   backlog [--all]
   remind [--answered]`;
 
-const THREAD_ID = /^(mcp:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// A delegated child's id is URL-encoded after its prefix, so it never holds "/" or "..".
+const THREAD_ID = /^(?:(mcp:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|thread:delegated-task:[A-Za-z0-9%_-]+(?:\.[A-Za-z0-9%_-]+)*)$/;
 // FROM is where the model took over: a run ordinal from t3_thread_read's recentRuns, such as run-12, or a date.
 const MODEL = /^([\w.-]+)\/([\w.:-]+)@(run-\d+|\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?)$/;
 const DAY = 24 * 60 * 60 * 1000;
@@ -284,7 +285,7 @@ function applyTrail(home, rec, plan, at) {
 }
 
 function threadRecord(id, args, at) {
-  if (!THREAD_ID.test(id ?? "")) refuse(`needs a T3 thread id (a UUID, or mcp: and a UUID), got ${id ?? "nothing"}`);
+  if (!THREAD_ID.test(id ?? "")) refuse(`needs a T3 thread id (a UUID, mcp: and a UUID, or a child's thread:delegated-task:... id), got ${id ?? "nothing"}`);
   const file = join(RETRO, id, "thread.json");
   const problems = [];
   const rec = (existsSync(file) && readJson(file, problems)) || {

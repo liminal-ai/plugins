@@ -116,6 +116,8 @@ test("--reflected refuses until synthesis.md is a file in a folder of the thread
 test("rejects an id that is not a thread uuid, an unknown option, and an impossible date", (t) => {
   const { run, reflect } = sandbox(t);
   assert.match(run(["register", "limhealth-restart"]).err, /needs a T3 thread id/);
+  assert.match(run(["register", "thread:delegated-task:../../etc"]).err, /needs a T3 thread id/);
+  assert.match(run(["register", "thread:delegated-task:a/b"]).err, /needs a T3 thread id/);
   assert.match(run(["register", A, "--titel", "x"]).err, /unknown option --titel/);
   reflect(A);
   assert.match(run(["open", "--at", "2026-02-30"]).err, /takes a real date/);
@@ -520,7 +522,7 @@ test("a thread an agent created, with an mcp: id, registers and reflects", (t) =
   const id = "mcp:5f6a3c80-20ac-4892-86dc-6ccda9c470b5";
   reflect(id);
   assert.match(run(["status"]).out, /t3-thread:\/\/v1\/mcp:5f6a3c80/);
-  assert.match(run(["register", "thread:delegated-task:x"]).err, /needs a T3 thread id/);
+  assert.match(run(["register", "thread:other-kind:x"]).err, /needs a T3 thread id/);
 });
 
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
@@ -733,3 +735,12 @@ test("register keeps every model a thread ran on, in the order recorded", (t) =>
   assert.equal(bad.code, 1);
   assert.match(bad.err, /--model takes <provider>\/<model>@<from>/);
 });
+
+test("registers a delegated child's thread id", (t) => {
+  const { run, home } = sandbox(t);
+  const child = "thread:delegated-task:command%3Amcp%3A08c364f5-0c24-4c5a-bcb9-d058b5f7686c%3Adelegate-task%3Aslice-lane-7";
+  assert.equal(run(["register", child, "--title", "lane 7", "--project", "dungeonwright"]).code, 0);
+  assert.ok(existsSync(join(home(child), "thread.json")));
+  assert.match(run(["status"]).out, /lane 7/);
+});
+
