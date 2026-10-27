@@ -2,14 +2,14 @@
 
 Read this file before you merge from upstream, push, open a PR, or merge one.
 
-Fork of `cursor/plugins`, default branch `lim`. Fork point: upstream `11713c6` (pstack 0.15.17). Last synced: upstream `f2bad52` (pstack 0.15.29), recorded in `FORK-SYNC-LOG.md`. Install only from `pstack/`, never the repo root; for the `/orchestrate` name clash see `poteto-help`. Role-file setup lives in `setup-pstack`.
+Fork of `cursor/plugins`, default branch `lim`. Fork point: upstream `11713c6` (pstack 0.15.17). Last synced: upstream `ab69380` (pstack 0.15.32), recorded in `FORK-SYNC-LOG.md`. Install only from `pstack/`, never the repo root; for the `/orchestrate` name clash see `poteto-help`. Role-file setup lives in `setup-pstack`.
 
 ## Upstream drift
 
 ```bash
 git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/cursor/plugins.git
 git fetch --multiple upstream origin
-SYNC=f2bad52   # last synced upstream commit; set it to the new tip after each sync
+SYNC=ab69380   # last synced upstream commit; set it to the new tip after each sync
 git log --oneline $SYNC..upstream/main -- pstack cursor-team-kit/skills     # upstream commits since the last sync
 git show upstream/main:pstack/.cursor-plugin/plugin.json | rg version        # upstream pstack version
 comm -12 <(git diff --name-only $SYNC upstream/main -- pstack | sort) \
@@ -59,6 +59,7 @@ node scripts/check-t3-port.mjs
 node --test scripts/check-t3-port.test.mjs
 node scripts/check-pstack-docs.mjs
 (cd pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun test)
+node --test pstack/skills/*/scripts/test/*.test.mjs                        # statechart; the first run installs TLC and Java with mise
 ```
 
 ## Deploying
