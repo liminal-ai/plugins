@@ -35,7 +35,12 @@ export async function readFacts(
     github.issueComments(pr),
   ]);
   const head = pull.headRefOid;
-  const plan = resolvePlan(asked.plan, declaredPlan(pull.body), asked.cwd);
+  const declared = declaredPlan(pull.body);
+  if (declared !== null && "malformed" in declared)
+    throw new ReadError(
+      `the PR body's plan line "${declared.malformed}" does not read as pstack-plan: <plan file> pr=<PR id>. Fix the line so the gate can check the plan.`
+    );
+  const plan = resolvePlan(asked.plan, declared, asked.cwd);
   const [checks, threads, baseUsesMergeQueue] = await Promise.all([
     github.checks(pr, head),
     github.openThreads(pr),

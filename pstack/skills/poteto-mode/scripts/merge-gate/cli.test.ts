@@ -772,6 +772,18 @@ describe("merge-gate", () => {
         }
       });
 
+      it("reads a declared plan whose path has spaces, and refuses a plan line it cannot read", async () => {
+        const dir = join(mkdtempSync(join(tmpdir(), "merge-gate-spaced-")), "Project Plans");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "plan.md"), readFileSync(plan, "utf8"));
+        const spaced = await declaring(`pstack-plan: ${join(dir, "plan.md")} pr=GC2`, [verdictWith([])]);
+        expect(spaced.exit).toBe(1);
+        expect(spaced.out).toContain("The verdict omits 16 required boxes of GC2");
+        const malformed = await declaring(`pstack-plan: ${join(dir, "plan.md")}`, [verdictWith(allDone())]);
+        expect(malformed.exit).toBe(2);
+        expect(malformed.out).toContain("does not read as pstack-plan: <plan file> pr=<PR id>");
+      });
+
       it("refuses a stale copy whose path ends like the declared plan", async () => {
         inCheckout();
         const stale = join(mkdtempSync(join(tmpdir(), "merge-gate-stale-")), "docs");

@@ -186,7 +186,8 @@ export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
 const BOX_LINE =
   /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped|changed)(?:\. (.*))?$/;
 const BOX_PREFIX = /^(?:[-*] )?box /;
-const PLAN_DECLARATION = /^pstack-plan: (\S+) pr=(\S+)$/;
+const PLAN_PREFIX = "pstack-plan:";
+const PLAN_DECLARATION = /^pstack-plan: (\S(?:.*\S)?) pr=(\S+)$/;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
 const APPROVED_IN = /^approved-in: \S+$/;
 const CODEX_LOGINS = new Set([
@@ -271,11 +272,17 @@ export function parseBoxLines(below: readonly string[]): {
   return { boxes, unread };
 }
 
-/** The first `pstack-plan: <path> pr=<id>` line of a PR body. */
-export function declaredPlan(body: string): PlanRef | null {
+/**
+ * The first `pstack-plan: <path> pr=<id>` line of a PR body; the path may hold spaces. A line that starts
+ * `pstack-plan:` and does not parse comes back as `{ malformed }`, so a declared plan is never dropped silently.
+ */
+export function declaredPlan(
+  body: string
+): PlanRef | { readonly malformed: string } | null {
   for (const line of lines(body)) {
+    if (!line.startsWith(PLAN_PREFIX)) continue;
     const match = PLAN_DECLARATION.exec(line);
-    if (match !== null) return { path: match[1], pr: match[2] };
+    return match === null ? { malformed: line } : { path: match[1], pr: match[2] };
   }
   return null;
 }
