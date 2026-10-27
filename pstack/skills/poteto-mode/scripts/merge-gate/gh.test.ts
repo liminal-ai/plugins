@@ -61,6 +61,7 @@ beforeAll(() => {
     mergedAt: null,
     isDraft: false,
     autoMergeRequest: null,
+    body: "",
   });
   const user = (login: string, type: string) => ({ login, type });
   json("comments.json", [

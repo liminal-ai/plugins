@@ -17,6 +17,7 @@ export interface PullRequest {
   readonly headRefOid: string;
   readonly reviewDecision: ReviewDecision;
   readonly autoMergeArmed: boolean;
+  readonly body: string;
 }
 
 /** `app` is the slug of the GitHub App whose check suite reported a check run; null for a commit status or an app GitHub does not name. */
@@ -87,6 +88,19 @@ export interface CheckWaiver {
   readonly reason: string;
 }
 
+/** A plan file and the PR id that ends its section's title, as --plan and --plan-pr or a PR body's pstack-plan line give them. */
+export interface PlanRef {
+  readonly path: string;
+  readonly pr: string;
+}
+
+/** The plan the run checks: the one passed, else the one the PR body declares. */
+export type PlanFact =
+  | { readonly kind: "none" }
+  | { readonly kind: "read"; readonly boxes: PlanBoxes; readonly declared: boolean }
+  | { readonly kind: "declared-missing"; readonly declared: PlanRef }
+  | { readonly kind: "mismatch"; readonly declared: PlanRef; readonly passed: PlanRef };
+
 /** The required verify boxes of the PR's section in its plan, as check-plan.mjs names them. */
 export interface PlanBoxes {
   readonly path: string;
@@ -126,7 +140,7 @@ export interface Facts {
   readonly mergeBase: string;
   readonly currentHash: HashResult;
   readonly verdict: VerdictFact;
-  readonly plan: PlanBoxes | null;
+  readonly plan: PlanFact;
   readonly waivers: readonly Waiver[];
   readonly checkWaivers: readonly CheckWaiver[];
   readonly instructionFiles: InstructionFiles | null;
@@ -164,6 +178,7 @@ export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
 const BOX_LINE =
   /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped|changed)(?:\. (.*))?$/;
 const BOX_PREFIX = /^(?:[-*] )?box /;
+const PLAN_DECLARATION = /^pstack-plan: (\S+) pr=(\S+)$/;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
 const APPROVED_IN = /^approved-in: \S+$/;
 const CODEX_LOGINS = new Set([
@@ -246,6 +261,15 @@ export function parseBoxLines(below: readonly string[]): {
       });
   }
   return { boxes, unread };
+}
+
+/** The first `pstack-plan: <path> pr=<id>` line of a PR body. */
+export function declaredPlan(body: string): PlanRef | null {
+  for (const line of lines(body)) {
+    const match = PLAN_DECLARATION.exec(line);
+    if (match !== null) return { path: match[1], pr: match[2] };
+  }
+  return null;
 }
 
 /** Who accepted a changed bar and why, read from the note `<who>, <why>`; null unless both are there. */
@@ -460,9 +484,31 @@ export const BOX_FORMS =
 
 const planBoxes: Requirement = {
   name: "Plan boxes",
-  evaluate({ verdict: fact, plan, waivers }) {
+  evaluate({ verdict: fact, plan: planFact, waivers }) {
+    if (planFact.kind === "declared-missing") {
+      const { path, pr } = planFact.declared;
+      return unmet(
+        `The PR body declares the plan ${path} for ${pr}, and it is not on this machine. Run the gate from where that path resolves, or pass the plan's path here:`,
+        [`--plan ${path} --plan-pr ${pr}`]
+      );
+    }
+    if (planFact.kind === "mismatch") {
+      const { declared, passed } = planFact;
+      return unmet(
+        "--plan and --plan-pr name another plan than the PR body declares. Pass the declared plan, or fix the PR body's pstack-plan line:",
+        [
+          `declared: pstack-plan: ${declared.path} pr=${declared.pr}`,
+          `passed: --plan ${passed.path} --plan-pr ${passed.pr}`,
+        ]
+      );
+    }
+    const plan = planFact.kind === "read" ? planFact.boxes : null;
+    const noPlan =
+      planFact.kind === "none"
+        ? ["No plan checked: the PR declares none and none was passed."]
+        : [];
     if (fact.kind !== "found")
-      return met("no verdict to read; see Independent verdict");
+      return met("no verdict to read; see Independent verdict", noPlan);
     const listed = new Set(fact.boxes.map((box) => box.id));
     const repeated = [...listed].filter(
       (id) => fact.boxes.filter((box) => box.id === id).length > 1
@@ -522,7 +568,7 @@ const planBoxes: Requirement = {
     const scope =
       plan === null
         ? `no plan given, ${fact.boxes.length} box${fact.boxes.length === 1 ? "" : "es"} listed`
-        : `all ${plan.ids.length} required boxes of ${plan.pr} listed`;
+        : `all ${plan.ids.length} required boxes of ${plan.pr} listed${planFact.kind === "read" && planFact.declared ? `, from the plan the PR body declares` : ""}`;
     const notes = [
       scope,
       ...(skipped === 0
@@ -532,17 +578,14 @@ const planBoxes: Requirement = {
         ? []
         : [`${changed.length} bar${changed.length === 1 ? "" : "s"} changed`]),
     ];
-    return met(
-      notes.join(", "),
-      changed.length === 0
-        ? undefined
-        : changed.flatMap((box) => {
-            const change = barChange(box.note);
-            return change === null
-              ? []
-              : [`changed: box ${box.id}, accepted by ${change.who}: ${change.why}`];
-          })
-    );
+    const changes = changed.flatMap((box) => {
+      const change = barChange(box.note);
+      return change === null
+        ? []
+        : [`changed: box ${box.id}, accepted by ${change.who}: ${change.why}`];
+    });
+    const notesBelow = [...noPlan, ...changes];
+    return met(notes.join(", "), notesBelow.length === 0 ? undefined : notesBelow);
   },
 };
 

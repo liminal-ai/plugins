@@ -699,6 +699,88 @@ describe("merge-gate", () => {
       }
     });
 
+    describe("a plan the PR body declares", () => {
+      const declaring = (
+        body: string,
+        comments: readonly IssueComment[],
+        flags: readonly string[] = ["--check"]
+      ) =>
+        gate(
+          {
+            pull: { headRefOid: repos.head, body: `Adds GC2.\n\n${body}\n` },
+            comments: [...comments, codexComment(repos.head)],
+          },
+          flags
+        );
+      const inCheckout = () => {
+        mkdirSync(join(repos.gate, "docs"), { recursive: true });
+        writeFileSync(join(repos.gate, "docs", "plan.md"), readFileSync(plan, "utf8"));
+        return join(repos.gate, "docs", "plan.md");
+      };
+
+      it("checks the declared plan when no --plan is passed", async () => {
+        const refused = await declaring(`pstack-plan: ${plan} pr=GC2`, [verdictWith([])]);
+        expect(refused.exit).toBe(1);
+        expect(refused.out).toContain("The verdict omits 16 required boxes of GC2");
+
+        const passed = await declaring(`pstack-plan: ${plan} pr=GC2`, [verdictWith(allDone())]);
+        expect(passed.exit).toBe(0);
+        expect(passed.out).toContain(
+          "met: Plan boxes (all 16 required boxes of GC2 listed, from the plan the PR body declares)"
+        );
+      });
+
+      it("resolves a relative declared path from the working directory, and agrees with its full path passed", async () => {
+        const full = inCheckout();
+        const declared = await declaring("pstack-plan: docs/plan.md pr=GC2", [verdictWith(allDone())]);
+        expect(declared.exit).toBe(0);
+        const passed = await declaring(
+          "pstack-plan: docs/plan.md pr=GC2",
+          [verdictWith(allDone())],
+          ["--check", "--plan", full, "--plan-pr", "GC2"]
+        );
+        expect(passed.exit).toBe(0);
+        expect(passed.out).toContain("met: Plan boxes (all 16 required boxes of GC2 listed)");
+      });
+
+      it("refuses a declared plan that is not on this machine and prints the flags to pass", async () => {
+        const result = await declaring("pstack-plan: docs/elsewhere-plan.md pr=GC2", [verdictWith(allDone())]);
+        expect(result.exit).toBe(1);
+        expect(result.missing).toEqual([
+          "missing: Plan boxes. The PR body declares the plan docs/elsewhere-plan.md for GC2, and it is not on this machine. Run the gate from where that path resolves, or pass the plan's path here:",
+        ]);
+        expect(result.out).toContain("\n  --plan docs/elsewhere-plan.md --plan-pr GC2\n");
+      });
+
+      it("refuses a passed plan that disagrees with the declared one and shows both", async () => {
+        const full = inCheckout();
+        for (const flags of [
+          ["--plan", full, "--plan-pr", "GC3"],
+          ["--plan", plan, "--plan-pr", "GC2"],
+        ]) {
+          const result = await declaring(
+            "pstack-plan: docs/plan.md pr=GC2",
+            [verdictWith(allDone())],
+            ["--check", ...flags]
+          );
+          expect(result.exit).toBe(1);
+          expect(result.missing[0]).toStartWith(
+            "missing: Plan boxes. --plan and --plan-pr name another plan than the PR body declares."
+          );
+          expect(result.out).toContain("  declared: pstack-plan: docs/plan.md pr=GC2\n");
+          expect(result.out).toContain(`  passed: --plan ${flags[1]} --plan-pr ${flags[3]}\n`);
+        }
+      });
+
+      it("says plainly when no plan was checked, and still passes", async () => {
+        const result = await declaring("", [verdictWith([])]);
+        expect(result.exit).toBe(0);
+        expect(result.out).toContain(
+          "met: Plan boxes (no plan given, 0 boxes listed)\n  No plan checked: the PR declares none and none was passed.\n"
+        );
+      });
+    });
+
     it("checks skips even with no plan given", async () => {
       const result = await planGate(
         [verdictWith(["box perf: skipped. Not run."])],

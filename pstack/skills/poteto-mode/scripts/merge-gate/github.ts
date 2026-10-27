@@ -250,7 +250,7 @@ export class GhGitHub implements GitHub {
         "--repo",
         repoName(pr),
         "--json",
-        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft,autoMergeRequest",
+        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft,autoMergeRequest,body",
       ]),
       "pull request"
     );
@@ -269,6 +269,7 @@ export class GhGitHub implements GitHub {
       headRefOid: facts.headRefOid,
       reviewDecision: facts.reviewDecision,
       autoMergeArmed: value.autoMergeRequest !== null,
+      body: string(value.body, "pull request.body"),
     };
   }
 

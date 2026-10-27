@@ -1,8 +1,10 @@
 import {
   type Facts,
   type HashResult,
+  type PlanRef,
   type PrRef,
   type VerdictFact,
+  declaredPlan,
   findVerdictLine,
   hasVerdictLine,
   isInstructionFile,
@@ -13,13 +15,18 @@ import {
 import type { Git } from "./git.ts";
 import { ReadError } from "./git.ts";
 import type { GitHub } from "./github.ts";
+import { resolvePlan } from "./plan.ts";
 
 /** Reads every fact once. Throws on any read it cannot vouch for, so a read error never passes. */
 export async function readFacts(
   github: GitHub,
   git: Git,
   pr: PrRef,
-  asked: Pick<Facts, "plan" | "waivers" | "checkWaivers">
+  asked: Pick<Facts, "waivers" | "checkWaivers"> & {
+    /** The plan --plan and --plan-pr pass, and the directory a relative plan path resolves from. */
+    readonly plan: PlanRef | null;
+    readonly cwd: string;
+  }
 ): Promise<Facts> {
   const remote = git.remoteFor(pr);
   const [defaultBranch, pull, comments] = await Promise.all([
@@ -28,6 +35,7 @@ export async function readFacts(
     github.issueComments(pr),
   ]);
   const head = pull.headRefOid;
+  const plan = resolvePlan(asked.plan, declaredPlan(pull.body), asked.cwd);
   const [checks, threads, baseUsesMergeQueue] = await Promise.all([
     github.checks(pr, head),
     github.openThreads(pr),
@@ -76,7 +84,9 @@ export async function readFacts(
     mergeBase,
     currentHash,
     verdict,
-    ...asked,
+    plan,
+    waivers: asked.waivers,
+    checkWaivers: asked.checkWaivers,
     instructionFiles:
       instructionPaths.length === 0
         ? null

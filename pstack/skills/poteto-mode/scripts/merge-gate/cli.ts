@@ -21,7 +21,7 @@ import {
   BOX_ID,
   type CheckWaiver,
   type Facts,
-  type PlanBoxes,
+  type PlanRef,
   type PrRef,
   type Waiver,
   evaluate,
@@ -41,7 +41,6 @@ import {
   type MergeMethod,
   type MergeReadBack,
 } from "./github.ts";
-import { readPlanBoxes } from "./plan.ts";
 import { readFacts } from "./read.ts";
 
 export const EXIT = { merged: 0, refused: 1, error: 2 } as const;
@@ -60,7 +59,7 @@ interface Options {
   readonly repo: Repository | null;
   readonly check: boolean;
   readonly method: MergeMethod;
-  readonly plan: { readonly path: string; readonly pr: string } | null;
+  readonly plan: PlanRef | null;
   readonly waivers: readonly Waiver[];
   readonly checkWaivers: readonly CheckWaiver[];
 }
@@ -156,7 +155,7 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
     )
     .option(
       "--plan <file>",
-      "the PR's plan; the verdict must list every verify box of its section"
+      "the PR's plan; the verdict must list every verify box of its section. Without it, the gate uses the plan the PR body declares on a line \"pstack-plan: <file> pr=<id>\""
     )
     .option("--plan-pr <id>", "the PR id that ends the section's title, such as GC2")
     .option(
@@ -263,12 +262,12 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   };
   let pr: PrRef;
   let facts: Facts;
-  let plan: PlanBoxes | null = null;
-  const asked = () => ({
-    plan,
+  const asked = {
+    plan: options.plan,
+    cwd: runtime.cwd,
     waivers: options.waivers,
     checkWaivers: options.checkWaivers,
-  });
+  };
   try {
     const repo = options.repo ?? cwd.originRepo();
     pr = { ...repo, number: options.pr };
@@ -276,9 +275,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     base = { ...base, repo: `${repo.owner}/${repo.repo}` };
     runtime.stdout(await mergeBrief(runtime.github, repo));
     git = cwd.forRepo(runtime.store, repo);
-    if (options.plan !== null)
-      plan = readPlanBoxes(options.plan.path, options.plan.pr);
-    facts = await readFacts(runtime.github, git, pr, asked());
+    facts = await readFacts(runtime.github, git, pr, asked);
   } catch (error) {
     return readFailed(error);
   }
@@ -317,7 +314,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   // gh pr merge pins only the head, so every other requirement is read and judged again right before the merge.
   let fresh: Facts;
   try {
-    fresh = await readFacts(runtime.github, git, pr, asked());
+    fresh = await readFacts(runtime.github, git, pr, asked);
   } catch (error) {
     return readFailed(error, run);
   }

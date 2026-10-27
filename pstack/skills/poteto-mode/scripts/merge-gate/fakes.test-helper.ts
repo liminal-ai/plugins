@@ -273,6 +273,7 @@ export function fakeGitHub(
         baseRefName: "main",
         reviewDecision: null,
         autoMergeArmed: false,
+        body: "",
         ...options.pull,
         ...(later("pullRequest") ? options.atMerge?.pull : {}),
       };
