@@ -117,7 +117,7 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
     .requiredOption("--pr <n>", "pull request number", parsePr)
     .option(
       "--repo <owner/name>",
-      "GitHub repo (default: the origin remote's repo)",
+      "GitHub repo (default: the origin remote's repo); from a directory with no remote for it, the gate keeps its own clone under the pstack store",
       parseRepo
     )
     .option("--check", "evaluate and print, merge nothing", false)
@@ -200,7 +200,8 @@ const message = (error: unknown): string =>
 
 async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   const mode = options.check ? "check" : "merge";
-  const git = new Git(runtime.cwd);
+  const cwd = new Git(runtime.cwd);
+  let git: Git;
   let label = `PR #${options.pr}`;
   let base: Omit<RunRecord, "outcome" | "missing"> = {
     repo: "",
@@ -221,11 +222,12 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   let facts: Facts;
   let plan: PlanBoxes | null = null;
   try {
-    const repo = options.repo ?? git.originRepo();
+    const repo = options.repo ?? cwd.originRepo();
     pr = { ...repo, number: options.pr };
     label = `${repo.owner}/${repo.repo}#${pr.number}`;
     base = { ...base, repo: `${repo.owner}/${repo.repo}` };
     runtime.stdout(await mergeBrief(runtime.github, repo));
+    git = cwd.forRepo(runtime.store, repo);
     if (options.plan !== null)
       plan = readPlanBoxes(options.plan.path, options.plan.pr);
     facts = await readFacts(runtime.github, git, pr, plan, options.waivers);

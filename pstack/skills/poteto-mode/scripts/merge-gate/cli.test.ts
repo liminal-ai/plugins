@@ -57,6 +57,28 @@ async function gate(
   return { exit, out, full: runtime.out(), missing, calls: github.calls, log };
 }
 
+/** Runs `body` with git config entries every git child process sees, as GIT_CONFIG_COUNT passes them. */
+async function withGitConfig<T>(
+  entries: Record<string, string>,
+  body: () => Promise<T>
+): Promise<T> {
+  const pairs = Object.entries(entries);
+  const keys = ["GIT_CONFIG_COUNT", ...pairs.flatMap((_, i) => [`GIT_CONFIG_KEY_${i}`, `GIT_CONFIG_VALUE_${i}`])];
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  process.env.GIT_CONFIG_COUNT = String(pairs.length);
+  pairs.forEach(([key, value], i) => {
+    process.env[`GIT_CONFIG_KEY_${i}`] = key;
+    process.env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  try {
+    return await body();
+  } finally {
+    for (const [key, value] of saved)
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  }
+}
+
 const merged = (calls: readonly string[]) =>
   calls.some((call) => call.startsWith("merge "));
 
@@ -879,13 +901,16 @@ describe("merge-gate", () => {
       });
     }
 
-    it("exits 2 when no remote in the clone points at the repo", async () => {
+    it("exits 2 when the gate's own clone cannot fetch the repo", async () => {
       const github = fakeGitHub({ pull: { headRefOid: repos.head } });
       const runtime = runtimeFor(github, repos.gate);
-      const exit = await main(["--repo", "other/repo", "--pr", "1"], runtime);
+      const exit = await withGitConfig(
+        { [`url.${repos.remote}-missing.insteadOf`]: "https://github.com/other/repo" },
+        () => main(["--repo", "other/repo", "--pr", "1"], runtime)
+      );
       expect(exit).toBe(2);
-      expect(runtime.out()).toContain("no git remote in");
-      expect(github.calls).toEqual(["mergeBrief other/repo"]);
+      expect(runtime.decision()).toStartWith("ERROR: other/repo#1\n");
+      expect(merged(github.calls)).toBe(false);
     });
   });
 
@@ -1040,6 +1065,50 @@ describe("merge-gate", () => {
     const result = await gate();
     expect(result.exit).toBe(0);
     expect(result.log()).toContain("\tcheck\twould-merge\t");
+  });
+
+  describe("--repo from a directory with no clone of the repo", () => {
+    const fromElsewhere = async (cwd: string, store?: string) => {
+      const github = fakeGitHub({
+        comments: approvals(),
+        pull: { headRefOid: repos.head },
+      });
+      const runtime = { ...runtimeFor(github, cwd), ...(store ? { store } : {}) };
+      const exit = await withGitConfig(
+        {
+          [`url.${repos.remote.slice(0, -".git".length)}.insteadOf`]:
+            "https://github.com/owner/repo",
+        },
+        () => main(["--repo", REPO, "--pr", "1", "--check"], runtime)
+      );
+      return { exit, out: runtime.decision(), store: runtime.store };
+    };
+
+    it("keeps a bare clone of the repo under the store and judges from it", async () => {
+      const first = await fromElsewhere(mkdtempSync(join(tmpdir(), "merge-gate-cwd-")));
+      expect(first.exit).toBe(0);
+      expect(first.out).toStartWith(`WOULD MERGE: owner/repo#1 at ${repos.head.slice(0, 7)}`);
+      const clone = join(first.store, "merge-gate", "repos", "owner", "repo.git");
+      expect(repos.git(clone, "rev-parse", "--is-bare-repository")).toBe("true");
+      expect(repos.git(clone, "config", "remote.origin.url")).toBe(
+        "https://github.com/owner/repo.git"
+      );
+      expect(repos.git(clone, "cat-file", "-t", repos.head)).toBe("commit");
+
+      const again = await fromElsewhere(mkdtempSync(join(tmpdir(), "merge-gate-cwd-")), first.store);
+      expect(again.exit).toBe(0);
+    });
+
+    it("uses the store's clone from a clone of another repo", async () => {
+      const other = mkdtempSync(join(tmpdir(), "merge-gate-other-"));
+      repos.git(other, "init", "--quiet");
+      repos.git(other, "remote", "add", "origin", "https://github.com/other/repo.git");
+      const result = await fromElsewhere(other);
+      expect(result.exit).toBe(0);
+      expect(
+        repos.git(join(result.store, "merge-gate", "repos", "owner", "repo.git"), "cat-file", "-t", repos.head)
+      ).toBe("commit");
+    });
   });
 
   it("defaults --repo to the origin remote's repo", async () => {

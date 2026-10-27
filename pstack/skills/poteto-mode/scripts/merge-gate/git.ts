@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseRemote } from "../watch-pr/github.ts";
 import type { Repository } from "../watch-pr/types.ts";
@@ -68,8 +69,47 @@ export class Git {
     return repo;
   }
 
-  /** The remote whose configured URL names the repo, read raw so the test can redirect it with insteadOf. */
+  /**
+   * A bare clone under the store, for a run from a directory with no remote for the repo.
+   * Each run fetches the commits it needs into it by SHA.
+   */
+  static cache(store: string, repo: Repository): Git {
+    const dir = join(store, "merge-gate", "repos", repo.owner, `${repo.repo}.git`);
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (error) {
+      throw new ReadError(
+        `the gate's clone ${dir} could not be made: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    const git = new Git(dir);
+    git.git(["init", "--quiet", "--bare"]);
+    if (git.findRemote(repo) === null)
+      git.git([
+        "remote",
+        "add",
+        "origin",
+        `https://github.com/${repo.owner}/${repo.repo}.git`,
+      ]);
+    return git;
+  }
+
+  /** This clone when one of its remotes names the repo, else the store's clone of it. */
+  forRepo(store: string, repo: Repository): Git {
+    return this.findRemote(repo) === null ? Git.cache(store, repo) : this;
+  }
+
   remoteFor(repo: Repository): string {
+    const remote = this.findRemote(repo);
+    if (remote === null)
+      throw new ReadError(
+        `no git remote in ${this.cwd} points at ${repo.owner}/${repo.repo}.`
+      );
+    return remote;
+  }
+
+  /** The remote whose configured URL names the repo, read raw so the test can redirect it with insteadOf. */
+  private findRemote(repo: Repository): string | null {
     const listed = this.exec([
       "git",
       "config",
@@ -82,9 +122,7 @@ export class Git {
       if (match !== null && parsed !== null && sameRepo(parsed, repo))
         return match[1];
     }
-    throw new ReadError(
-      `no git remote in ${this.cwd} points at ${repo.owner}/${repo.repo}. Run the gate from a clone of that repo.`
-    );
+    return null;
   }
 
   branchTip(remote: string, branch: string): string {
