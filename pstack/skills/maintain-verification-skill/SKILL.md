@@ -17,7 +17,7 @@ Pick one, and say which:
 
 ## Edit scope
 
-Only edit the verification skill's own directory (its SKILL.md, features/, and any harness scripts it owns). Never edit product code during a run: a behavior the map describes that the app no longer does is either doc drift (fix the map) or a product regression (report it, don't paper over it in docs).
+Only edit the verification skill's own directory (its SKILL.md, features/, and any harness scripts it owns) and the repo's merge brief, `.agents/merge-brief.md`. Never edit product code during a run: a behavior the map describes that the app no longer does is either doc drift (fix the map) or a product regression (report it, don't paper over it in docs).
 
 ## Pass
 
