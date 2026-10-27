@@ -772,6 +772,22 @@ describe("merge-gate", () => {
         }
       });
 
+      it("refuses a stale copy whose path ends like the declared plan", async () => {
+        inCheckout();
+        const stale = join(mkdtempSync(join(tmpdir(), "merge-gate-stale-")), "docs");
+        mkdirSync(stale, { recursive: true });
+        writeFileSync(join(stale, "plan.md"), readFileSync(plan, "utf8"));
+        const result = await declaring(
+          "pstack-plan: docs/plan.md pr=GC2",
+          [verdictWith(allDone())],
+          ["--check", "--plan", join(stale, "plan.md"), "--plan-pr", "GC2"]
+        );
+        expect(result.exit).toBe(1);
+        expect(result.missing[0]).toStartWith(
+          "missing: Plan boxes. --plan and --plan-pr name another plan than the PR body declares."
+        );
+      });
+
       it("says plainly when no plan was checked, and still passes", async () => {
         const result = await declaring("", [verdictWith([])]);
         expect(result.exit).toBe(0);

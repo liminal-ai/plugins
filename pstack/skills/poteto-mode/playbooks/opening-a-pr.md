@@ -19,7 +19,7 @@ Invoked at the end of every other playbook.
 - `## Blast Radius`: 1–2 sentences on who or what it touches and why that is safe or risky. If main is red, state the cost of leaving it red.
 - `## Verification`: 1–3 bullets, each a real run path and its outcome. Perf: one primary number with its unit, `before → after`, and a link to the arena or swarm directory for the rest. No sample-size methodology, swarm recitals, or metric tables.
 
-A PR that has a plan (`playbooks/multi-phase-plan.md`) declares it on its own line after the sections, `pstack-plan: <plan file> pr=<PR id>`, so the plan follows the PR to the merge gate.
+A PR that has a plan (`playbooks/multi-phase-plan.md`) declares it on its own line after the sections, `pstack-plan: <plan file> pr=<PR id>`, so the plan follows the PR to the merge gate. Give the full path (`~/` is fine), because the gate accepts only that same file.
 
 After the sections, attach videos or screenshots when they prove a claim. Full SHAs, swarm or arena lane recitals, lever-correction essays, file-by-file checklists, and "CLEAN" verdicts go in a linked artifact, not the body.
 

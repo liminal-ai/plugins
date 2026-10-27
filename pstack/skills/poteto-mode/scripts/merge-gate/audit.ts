@@ -30,7 +30,7 @@ function parseAuditArgs(
 ): AuditOptions {
   const program = new Command("merge-gate audit")
     .description(
-      "List PRs merged without a gate receipt: a runs.tsv row with the same repo, PR and head whose outcome is merged.\nRead-only on GitHub. Writes the result to <store>/merge-gate/audit/<YYYY-MM-DD>-<HHMM>.tsv (UTC).\nExit 0 every merge has a receipt, 1 any lacks one, 2 usage or read error."
+      "List PRs merged without a gate receipt: a runs.tsv row with the same repo, PR and head whose outcome is merged.\nRead-only on GitHub. Writes the result to its own file, <store>/merge-gate/audit/<YYYY-MM-DD>-<HHMMSS>.tsv (UTC).\nExit 0 every merge has a receipt, 1 any lacks one, 2 usage or read error."
     )
     .configureOutput({ writeOut: runtime.stdout, writeErr: runtime.stderr })
     .exitOverride()
@@ -194,12 +194,9 @@ export async function audit(
   }
 
   const stamp = runtime.now().toISOString();
-  const file = join(
-    runtime.store,
-    "merge-gate",
-    "audit",
-    `${stamp.slice(0, 10)}-${stamp.slice(11, 13)}${stamp.slice(14, 16)}.tsv`
-  );
+  const name = `${stamp.slice(0, 10)}-${stamp.slice(11, 13)}${stamp.slice(14, 16)}${stamp.slice(17, 19)}`;
+  const dir = join(runtime.store, "merge-gate", "audit");
+  let file = join(dir, `${name}.tsv`);
   const tsv = [
     "repo\tpr\tmerged_at\tmerged_by\thead\treceipt",
     ...results.flatMap(({ repo, merges, without: missing }) =>
@@ -216,8 +213,17 @@ export async function audit(
     ),
   ];
   try {
-    mkdirSync(join(runtime.store, "merge-gate", "audit"), { recursive: true });
-    writeFileSync(file, `${tsv.join("\n")}\n`);
+    mkdirSync(dir, { recursive: true });
+    // Each audit keeps its own file, so a second run in the same second never replaces the first's evidence.
+    for (let n = 2; ; n++) {
+      try {
+        writeFileSync(file, `${tsv.join("\n")}\n`, { flag: "wx" });
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        file = join(dir, `${name}-${n}.tsv`);
+      }
+    }
   } catch (error) {
     runtime.stdout(
       `${out.join("\n")}\nERROR: the audit could not be written to ${file}: ${message(error)}\n`

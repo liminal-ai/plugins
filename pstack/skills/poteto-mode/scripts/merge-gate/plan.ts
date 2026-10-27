@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, normalize, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { prSections, verifyBoxIds } from "../plan-boxes.mjs";
 import type { PlanBoxes, PlanFact, PlanRef } from "./gate.ts";
 import { ReadError } from "./git.ts";
@@ -32,8 +32,9 @@ const expand = (path: string): string =>
   path.replace(/^~(?=\/|$)/, homedir());
 
 /**
- * The plan a run checks. A passed plan must be the declared one: the same PR id, and the same file,
- * or, for a relative declaration, a file whose path ends with it. A relative path resolves from `cwd`.
+ * The plan a run checks. A passed plan must be the declared one: the same PR id, and the same file
+ * on disk. A relative path resolves from `cwd`. A path suffix is no proof of identity, because a
+ * stale copy in another checkout ends the same way and can list fewer boxes.
  */
 export function resolvePlan(
   passed: PlanRef | null,
@@ -42,11 +43,9 @@ export function resolvePlan(
 ): PlanFact {
   const where = (ref: PlanRef): string => resolve(cwd, expand(ref.path));
   if (passed !== null && declared !== null) {
-    const declaredPath = expand(declared.path);
-    const samePlan =
-      where(passed) === where(declared) ||
-      (!isAbsolute(declaredPath) &&
-        where(passed).endsWith(`${sep}${normalize(declaredPath)}`));
+    const real = (ref: PlanRef): string | null =>
+      existsSync(where(ref)) ? realpathSync(where(ref)) : null;
+    const samePlan = real(declared) !== null && real(declared) === real(passed);
     if (!samePlan || passed.pr !== declared.pr)
       return { kind: "mismatch", declared, passed };
   }

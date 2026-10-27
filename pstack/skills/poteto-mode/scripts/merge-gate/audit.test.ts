@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.ts";
@@ -44,7 +44,7 @@ describe("merge-gate audit", () => {
       { "owner/repo": [pull(1, A), pull(2, B, null), pull(3, C)] }
     );
     expect(result.exit).toBe(1);
-    const file = join(result.store, "merge-gate", "audit", "2026-10-17-1200.tsv");
+    const file = join(result.store, "merge-gate", "audit", "2026-10-17-120000.tsv");
     expect(result.out).toBe(
       [
         "Merges since 2026-10-10 with no gate receipt:",
@@ -113,5 +113,15 @@ describe("merge-gate audit", () => {
     const result = await runAudit(null, {});
     expect(result.exit).toBe(0);
     expect(result.out).toStartWith("No repos to audit: this machine's runs.tsv names none. Pass --repo <owner/name>.\n");
+  });
+
+  it("gives a second audit in the same second its own file", async () => {
+    const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: { "owner/repo": [pull(1, A)] } });
+    const runtime = runtimeFor(github, tmpdir());
+    expect(await main(["audit", "--repo", "owner/repo"], runtime)).toBe(1);
+    expect(await main(["audit", "--repo", "owner/repo"], runtime)).toBe(1);
+    const dir = join(runtime.store, "merge-gate", "audit");
+    expect(readdirSync(dir).sort()).toEqual(["2026-10-17-120000-2.tsv", "2026-10-17-120000.tsv"]);
+    expect(runtime.out()).toContain(`Wrote ${join(dir, "2026-10-17-120000-2.tsv")}`);
   });
 });
