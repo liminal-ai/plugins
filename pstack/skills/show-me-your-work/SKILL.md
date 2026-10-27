@@ -42,7 +42,7 @@ A run is one agent conversation, including its later turns and any summary of it
 
 ## Where it lives
 
-By default the log is a working artifact, not committed. Keep it at `decisions.tsv` in the work dir, or `.audit/<task-slug>.tsv` when several efforts run at once, and leave it out of git. When the work dir is a worktree or temp dir that will be removed, keep the log in the pstack store instead, at `audit/<date>-<task-slug>.tsv`.
+By default the log is a working artifact, not committed. Keep it at `decisions.tsv` in the run folder (`<project>/.pstack/runs/<run>/`, per poteto-mode's Run folder section), which git ignores and no worktree removal touches. Work with no project keeps it in the pstack store instead, at `audit/<date>-<task-slug>.tsv`.
 
 Commit it only when the work is ambitious enough that a reviewer needs the trail to trust the result.
 
