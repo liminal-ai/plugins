@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 
 const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
 const SCANNED = ["pstack/skills", "pstack/agents"];
-const TEXT = /\.(md|mjs|js|ts|sh|json|tsv)$/;
+const TEXT = /\.(md|mjs|js|ts|sh|json|tsv|ya?ml)$/;
 
 const BANNED = [
   {

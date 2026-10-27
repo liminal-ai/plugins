@@ -13,26 +13,29 @@ usage() { echo "usage: footprint.sh snapshot <run-dir> <before|after> [repo ...]
 
 section() { awk -v tag="$1" '{print tag "\t" $0}'; }
 
+# Keeps a route's scheme, host, port and path, and drops userinfo, query and fragment, which can carry tokens.
+scrub() { sed -E 's#://[^/@ ]*@#://#g; s#[?\#][^ ]*##g'; }
+
 ports() {
 	if command -v ss >/dev/null 2>&1; then
-		ss -Hltnp 2>/dev/null | awk '{p=$6; sub(/.*\(\("/, "", p); sub(/".*/, "", p); print $4 "\t" p}'
+		ss -Hltnp 2>/dev/null | awk '{p=$6; sub(/.*\(\("/, "", p); sub(/".*/, "", p); print $4 "\t" p}' || true
 	elif command -v lsof >/dev/null 2>&1; then
-		lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {print $9 "\t" $1}'
+		{ lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true; } | awk 'NR > 1 {print $9 "\t" $1}'
 	fi | sort -u
 }
 
 units() {
 	if command -v systemctl >/dev/null 2>&1; then
-		systemctl --user list-units --type=service,timer --state=running,active --no-legend --plain 2>/dev/null | awk '{print $1}'
+		{ systemctl --user list-units --type=service,timer --state=running,active --no-legend --plain 2>/dev/null || true; } | awk '{print $1}'
 	elif command -v launchctl >/dev/null 2>&1; then
-		launchctl list 2>/dev/null | awk 'NR > 1 && $3 !~ /^com\.apple\./ {print $3}'
+		{ launchctl list 2>/dev/null || true; } | awk 'NR > 1 && $3 !~ /^com\.apple\./ {print $3}'
 	fi | sort -u
 }
 
 routes() {
 	command -v tailscale >/dev/null 2>&1 || return 0
-	tailscale serve status 2>/dev/null | grep -E 'https?://|tcp://|\|--' || true
-	tailscale funnel status 2>/dev/null | grep -E 'https?://|tcp://|\|--' | sed 's/^/funnel /' || true
+	{ tailscale serve status 2>/dev/null || true; } | grep -E 'https?://|tcp://|\|--' | scrub || true
+	{ tailscale funnel status 2>/dev/null || true; } | grep -E 'https?://|tcp://|\|--' | scrub | sed 's/^/funnel /' || true
 }
 
 containers() {
@@ -54,7 +57,7 @@ repo_state() {
 	git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "$repo	not a git repo"; return 0; }
 	git -C "$repo" worktree list --porcelain | awk '/^worktree /{print "worktree\t" $2}'
 	git -C "$repo" for-each-ref --format='branch	%(refname:short)' refs/heads
-	git -C "$repo" stash list --format='stash	%gs' 2>/dev/null || true
+	git -C "$repo" stash list --format='stash	%gd %h' 2>/dev/null || true
 }
 
 snapshot() {
