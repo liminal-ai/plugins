@@ -81,6 +81,12 @@ export interface Waiver {
   readonly reason: string;
 }
 
+/** A missing gate check the lead accepts, given as `--waive <check>=<reason>` on the run that merges. */
+export interface CheckWaiver {
+  readonly check: string;
+  readonly reason: string;
+}
+
 /** The required verify boxes of the PR's section in its plan, as check-plan.mjs names them. */
 export interface PlanBoxes {
   readonly path: string;
@@ -122,11 +128,16 @@ export interface Facts {
   readonly verdict: VerdictFact;
   readonly plan: PlanBoxes | null;
   readonly waivers: readonly Waiver[];
+  readonly checkWaivers: readonly CheckWaiver[];
   readonly instructionFiles: InstructionFiles | null;
 }
 
 export type Result =
-  | { readonly met: true; readonly note: string }
+  | {
+      readonly met: true;
+      readonly note: string;
+      readonly details?: readonly string[];
+    }
   | {
       readonly met: false;
       readonly missing: string;
@@ -135,11 +146,14 @@ export type Result =
 
 export interface Requirement {
   readonly name: string;
+  /** The id a lead names in `--waive <id>=<reason>`; absent for a check no lead may waive. */
+  readonly waiver?: string;
   readonly evaluate: (facts: Facts) => Result;
 }
 
 export interface Evaluation {
   readonly name: string;
+  readonly waiver?: string;
   readonly result: Result;
 }
 
@@ -233,21 +247,30 @@ export function parseBoxLines(below: readonly string[]): {
   return { boxes, unread };
 }
 
-/** Each waiver that names a box the verdict did not skip; the run that gave it is a usage error. */
-export function strayWaivers(
-  verdict: VerdictFact,
-  waivers: readonly Waiver[]
-): string[] {
-  if (verdict.kind !== "found") return [];
-  const skipped = new Set(
-    verdict.boxes.filter((box) => box.status === "skipped").map((box) => box.id)
-  );
-  return waivers
-    .filter((waiver) => !skipped.has(waiver.id))
-    .map(
-      (waiver) =>
-        `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
-    );
+/** Each waiver for a box the verdict did not skip or a check that holds; the run that gave it is a usage error. */
+export function strayWaivers(facts: Facts): string[] {
+  const { verdict } = facts;
+  const boxes =
+    verdict.kind !== "found"
+      ? []
+      : facts.waivers
+          .filter(
+            (waiver) =>
+              !verdict.boxes.some(
+                (box) => box.id === waiver.id && box.status === "skipped"
+              )
+          )
+          .map(
+            (waiver) =>
+              `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
+          );
+  const checks = facts.checkWaivers.flatMap((waiver) => {
+    const requirement = REQUIREMENTS.find((r) => r.waiver === waiver.check);
+    return requirement === undefined || !requirement.evaluate(facts).met
+      ? []
+      : [`--waive ${waiver.check}: ${requirement.name} is met, so there is nothing to waive`];
+  });
+  return [...boxes, ...checks];
 }
 
 export function parseVerdictLine(line: string): {
@@ -271,7 +294,11 @@ export const isInstructionFile = (path: string): boolean => {
   return name === "agents.md" || name === "claude.md";
 };
 
-const met = (note: string): Result => ({ met: true, note });
+const met = (note: string, details?: readonly string[]): Result => ({
+  met: true,
+  note,
+  ...(details === undefined ? {} : { details }),
+});
 const unmet = (missing: string, details?: readonly string[]): Result => ({
   met: false,
   missing,
@@ -320,6 +347,7 @@ const autoMerge: Requirement = {
 
 const checks: Requirement = {
   name: "Checks",
+  waiver: "checks",
   evaluate({ checks: all }) {
     const counted = all.filter((check) => !isBugbot(check));
     const ignored = all.length - counted.length;
@@ -346,6 +374,7 @@ const checks: Requirement = {
 
 const reviewThreads: Requirement = {
   name: "Review threads",
+  waiver: "threads",
   evaluate({ threads }) {
     if (threads.length === 0) return met("none open");
     return unmet(
@@ -481,6 +510,7 @@ const planBoxes: Requirement = {
 
 const codexReview: Requirement = {
   name: "Codex review",
+  waiver: "codex",
   evaluate({ comments, pull }) {
     const ask =
       'Comment "@codex review" on the PR and wait for Codex\'s summary comment to name this head.';
@@ -554,11 +584,27 @@ export const REQUIREMENTS: readonly Requirement[] = [
   instructionApproval,
 ];
 
+export const WAIVABLE_CHECKS: readonly string[] = REQUIREMENTS.flatMap(
+  (requirement) => (requirement.waiver === undefined ? [] : [requirement.waiver])
+);
+
+/** Each requirement's result, a missing check the lead waived counting as met with its reason. */
 export const evaluate = (facts: Facts): readonly Evaluation[] =>
-  REQUIREMENTS.map((requirement) => ({
-    name: requirement.name,
-    result: requirement.evaluate(facts),
-  }));
+  REQUIREMENTS.map(({ name, waiver, evaluate: judge }) => {
+    const result = judge(facts);
+    const waived = facts.checkWaivers.find((entry) => entry.check === waiver);
+    return {
+      name,
+      waiver,
+      result:
+        result.met || waived === undefined
+          ? result
+          : met(
+              `waived by the lead: ${waived.reason}; unmet: ${result.missing}`,
+              result.details
+            ),
+    };
+  });
 
 export const missingNames = (evaluations: readonly Evaluation[]): string[] =>
   evaluations.filter((entry) => !entry.result.met).map((entry) => entry.name);
@@ -568,12 +614,19 @@ export function renderEvaluations(
   evaluations: readonly Evaluation[]
 ): string {
   const out = [header];
-  for (const { name, result } of evaluations) {
+  for (const { name, waiver, result } of evaluations) {
     if (result.met) continue;
     out.push(`missing: ${name}. ${result.missing}`);
     for (const detail of result.details ?? []) out.push(`  ${detail}`);
+    if (waiver !== undefined)
+      out.push(
+        `  If the lead accepts merging without it, the lead runs the gate with --waive ${waiver}=<reason>.`
+      );
   }
-  for (const { name, result } of evaluations)
-    if (result.met) out.push(`met: ${name} (${result.note})`);
+  for (const { name, result } of evaluations) {
+    if (!result.met) continue;
+    out.push(`met: ${name} (${result.note})`);
+    for (const detail of result.details ?? []) out.push(`  ${detail}`);
+  }
   return `${out.join("\n")}\n`;
 }

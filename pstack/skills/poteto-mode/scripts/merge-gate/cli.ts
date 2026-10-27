@@ -18,6 +18,7 @@ import type { Repository } from "../watch-pr/types.ts";
 import { parsePrNumber } from "../watch-pr/types.ts";
 import {
   BOX_ID,
+  type CheckWaiver,
   type Facts,
   type PlanBoxes,
   type PrRef,
@@ -27,6 +28,7 @@ import {
   renderEvaluations,
   short,
   strayWaivers,
+  WAIVABLE_CHECKS,
 } from "./gate.ts";
 import { Git, ReadError } from "./git.ts";
 import {
@@ -59,6 +61,7 @@ interface Options {
   readonly method: MergeMethod;
   readonly plan: { readonly path: string; readonly pr: string } | null;
   readonly waivers: readonly Waiver[];
+  readonly checkWaivers: readonly CheckWaiver[];
 }
 
 interface RunRecord {
@@ -74,7 +77,8 @@ interface RunRecord {
     | "merged-elsewhere"
     | "error";
   readonly missing: readonly string[];
-  readonly waived: readonly Waiver[];
+  /** Each waiver as the log's waived column lists it. */
+  readonly waived: readonly string[];
 }
 
 const LOG_HEADER = "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived\n";
@@ -107,6 +111,29 @@ function collectWaiver(value: string, previous: readonly Waiver[]): Waiver[] {
   return [...previous, { id, reason }];
 }
 
+function collectCheckWaiver(
+  value: string,
+  previous: readonly CheckWaiver[]
+): CheckWaiver[] {
+  const at = value.indexOf("=");
+  const check = at === -1 ? value : value.slice(0, at);
+  const reason = at === -1 ? "" : value.slice(at + 1).trim();
+  if (!WAIVABLE_CHECKS.includes(check))
+    throw new InvalidArgumentError(
+      `"${check}" is not a check the lead may waive. Waivable: ${WAIVABLE_CHECKS.join(", ")}. The verdict, plan boxes, open and mergeable, auto-merge, review decision and instruction-file approval are never waived`
+    );
+  if (reason === "")
+    throw new InvalidArgumentError(`check ${check} needs a reason: --waive ${check}=<reason>`);
+  if (previous.some((waiver) => waiver.check === check))
+    throw new InvalidArgumentError(`check ${check} is waived more than once`);
+  return [...previous, { check, reason }];
+}
+
+const waivedCells = (options: Options): string[] => [
+  ...options.waivers.map((waiver) => `${waiver.id}: ${waiver.reason}`),
+  ...options.checkWaivers.map((waiver) => `check ${waiver.check}: ${waiver.reason}`),
+];
+
 function parseArgs(argv: readonly string[], runtime: Runtime): Options {
   const program = new Command("merge-gate")
     .description(
@@ -136,6 +163,12 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
       "the lead accepts the verdict's skipped box <id>, for <reason>; repeatable, posted on the PR before the merge",
       collectWaiver,
       []
+    )
+    .option(
+      "--waive <check=reason>",
+      `the lead merges without the missing gate check <check> (${WAIVABLE_CHECKS.join(", ")}), for <reason>; repeatable, posted on the PR before the merge`,
+      collectCheckWaiver,
+      []
     );
   program.parse(argv, { from: "user" });
   const raw = program.opts<{
@@ -146,6 +179,7 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
     plan?: string;
     planPr?: string;
     acceptSkip: Waiver[];
+    waive: CheckWaiver[];
   }>();
   if ((raw.plan === undefined) !== (raw.planPr === undefined))
     program.error("error: --plan and --plan-pr go together");
@@ -159,6 +193,7 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
         ? null
         : { path: raw.plan, pr: raw.planPr },
     waivers: raw.acceptSkip,
+    checkWaivers: raw.waive,
   };
 }
 
@@ -182,7 +217,7 @@ function appendRun(runtime: Runtime, run: RunRecord): void {
     run.mode,
     run.outcome,
     run.missing.join("; "),
-    run.waived.map((waiver) => `${waiver.id}: ${waiver.reason}`).join("; "),
+    run.waived.join("; "),
   ];
   appendFileSync(file, `${row.map(cell).join("\t")}\n`);
 }
@@ -208,7 +243,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     pr: String(options.pr),
     head: "",
     mode,
-    waived: options.waivers,
+    waived: waivedCells(options),
   };
   const readFailed = (error: unknown, run = base): Decision => {
     const detail = message(error);
@@ -221,6 +256,11 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   let pr: PrRef;
   let facts: Facts;
   let plan: PlanBoxes | null = null;
+  const asked = () => ({
+    plan,
+    waivers: options.waivers,
+    checkWaivers: options.checkWaivers,
+  });
   try {
     const repo = options.repo ?? cwd.originRepo();
     pr = { ...repo, number: options.pr };
@@ -230,7 +270,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     git = cwd.forRepo(runtime.store, repo);
     if (options.plan !== null)
       plan = readPlanBoxes(options.plan.path, options.plan.pr);
-    facts = await readFacts(runtime.github, git, pr, plan, options.waivers);
+    facts = await readFacts(runtime.github, git, pr, asked());
   } catch (error) {
     return readFailed(error);
   }
@@ -238,11 +278,11 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   const head = facts.pull.headRefOid;
   const run = { ...base, head };
   const at = `${label} at ${short(head)}`;
-  const stray = strayWaivers(facts.verdict, options.waivers);
+  const stray = strayWaivers(facts);
   if (stray.length > 0)
     return {
       exit: EXIT.error,
-      text: `ERROR: ${at}\nAn --accept-skip names a box the verdict did not skip, so nothing was merged. Waive only the boxes the verdict lists as skipped.\n${stray.map((line) => `  ${line}`).join("\n")}\n`,
+      text: `ERROR: ${at}\nA waiver names a box the verdict did not skip or a check that holds, so nothing was merged. Waive only the boxes the verdict lists as skipped and the checks the gate finds missing.\n${stray.map((line) => `  ${line}`).join("\n")}\n`,
       run: { ...run, outcome: "error", missing: stray.map((line) => `usage: ${line}`) },
     };
   const evaluations = evaluate(facts);
@@ -269,7 +309,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   // gh pr merge pins only the head, so every other requirement is read and judged again right before the merge.
   let fresh: Facts;
   try {
-    fresh = await readFacts(runtime.github, git, pr, plan, options.waivers);
+    fresh = await readFacts(runtime.github, git, pr, asked());
   } catch (error) {
     return readFailed(error, run);
   }
@@ -287,14 +327,20 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
       ),
       run: { ...run, outcome: "refused", missing: missingNames(lapsed) },
     };
-  const freshStray = strayWaivers(fresh.verdict, options.waivers);
+  const freshStray = strayWaivers(fresh);
   if (freshStray.length > 0)
     return notMerged(
-      `Since the gate checked the PR, the verdict changed and no longer skips every box the run waives (${freshStray.join("; ")}). Nothing was merged. Run the gate again.`
+      `Since the gate checked the PR, something the run waives came to hold (${freshStray.join("; ")}). Nothing was merged. Run the gate again.`
     );
-  if (options.waivers.length > 0 && fresh.verdict.kind === "found") {
+  if (
+    (options.waivers.length > 0 || options.checkWaivers.length > 0) &&
+    fresh.verdict.kind === "found"
+  ) {
     const posted = await runtime.github
-      .comment(pr, waiverComment(fresh.verdict.url, head, options.waivers))
+      .comment(
+        pr,
+        waiverComment(fresh.verdict.url, head, options.waivers, options.checkWaivers)
+      )
       .catch((error: unknown): WriteAttempt => ({
         ok: false,
         detail: message(error),
@@ -374,13 +420,23 @@ async function mergeBrief(github: GitHub, repo: Repository): Promise<string> {
 function waiverComment(
   verdictUrl: string,
   head: string,
-  waivers: readonly Waiver[]
+  waivers: readonly Waiver[],
+  checkWaivers: readonly CheckWaiver[]
 ): string {
-  return [
-    `merge-gate: the lead waived these skipped boxes of the verdict ${verdictUrl} to merge ${head}.`,
-    "",
-    ...waivers.map((waiver) => `- ${waiver.id}: ${waiver.reason}`),
-  ].join("\n");
+  const sections: string[][] = [];
+  if (waivers.length > 0)
+    sections.push([
+      `merge-gate: the lead waived these skipped boxes of the verdict ${verdictUrl} to merge ${head}.`,
+      "",
+      ...waivers.map((waiver) => `- ${waiver.id}: ${waiver.reason}`),
+    ]);
+  if (checkWaivers.length > 0)
+    sections.push([
+      `merge-gate: the lead waived these missing gate checks to merge ${head}.`,
+      "",
+      ...checkWaivers.map((waiver) => `- ${waiver.check}: ${waiver.reason}`),
+    ]);
+  return sections.map((lines) => lines.join("\n")).join("\n\n");
 }
 
 /** What a run that never parsed still tells the log: the raw --repo and --pr, if given. */

@@ -1,10 +1,8 @@
 import {
   type Facts,
   type HashResult,
-  type PlanBoxes,
   type PrRef,
   type VerdictFact,
-  type Waiver,
   findVerdictLine,
   hasVerdictLine,
   isInstructionFile,
@@ -21,8 +19,7 @@ export async function readFacts(
   github: GitHub,
   git: Git,
   pr: PrRef,
-  plan: PlanBoxes | null = null,
-  waivers: readonly Waiver[] = []
+  asked: Pick<Facts, "plan" | "waivers" | "checkWaivers">
 ): Promise<Facts> {
   const remote = git.remoteFor(pr);
   const [defaultBranch, pull, comments] = await Promise.all([
@@ -79,8 +76,7 @@ export async function readFacts(
     mergeBase,
     currentHash,
     verdict,
-    plan,
-    waivers,
+    ...asked,
     instructionFiles:
       instructionPaths.length === 0
         ? null

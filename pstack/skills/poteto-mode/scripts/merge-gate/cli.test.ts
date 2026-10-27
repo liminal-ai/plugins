@@ -1174,6 +1174,85 @@ describe("merge-gate", () => {
     expect(await main(["--pr", "abc"], runtime)).toBe(2);
     expect(await main(["--pr", "1", "--repo", "noslash"], runtime)).toBe(2);
   });
+  describe("waived gate checks", () => {
+    const reason = "the e2e runner is down, LIM-200; Lee ran the suite locally";
+
+    it("names the --waive flag under each missing check a lead may waive, and none under the verdict", async () => {
+      const result = await gate({
+        checks: [failing("e2e")],
+        threads: [{ author: "r", path: null, line: null, body: "nit", url: null }],
+        comments: [],
+      });
+      expect(result.exit).toBe(1);
+      for (const check of ["checks", "threads", "codex"])
+        expect(result.out).toContain(
+          `  If the lead accepts merging without it, the lead runs the gate with --waive ${check}=<reason>.`
+        );
+      expect(result.out.match(/--waive /g)).toHaveLength(3);
+      expect(result.out).toContain("missing: Independent verdict.");
+    });
+
+    it("would merge with a missing check the lead waives, and posts nothing under --check", async () => {
+      const result = await gate({ checks: [failing("e2e")] }, ["--check", "--waive", `checks=${reason}`]);
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        `met: Checks (waived by the lead: ${reason}; unmet: 1 failed (e2e). Fix the failures and push.)`
+      );
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(result.log().split("\n")[1]).toEndWith(
+        `\tcheck\twould-merge\t\tcheck checks: ${reason}`
+      );
+    });
+
+    it("posts the waived checks on the PR before it merges, and logs them", async () => {
+      const result = await gate(
+        { checks: [failing("e2e")], comments: [verdictComment("PASS", repos.head, repos.main)] },
+        ["--waive", `checks=${reason}`, "--waive", "codex=Codex is out of quota today"]
+      );
+      expect(result.exit).toBe(0);
+      const posted = result.calls.findIndex((call) => call.startsWith("comment "));
+      expect(result.calls[posted]).toBe(
+        `comment owner/repo#1 merge-gate: the lead waived these missing gate checks to merge ${repos.head}.\n\n- checks: ${reason}\n- codex: Codex is out of quota today`
+      );
+      expect(posted).toBeLessThan(result.calls.findIndex((call) => call.startsWith("merge ")));
+      expect(result.log().split("\n")[1]).toEndWith(
+        `\tmerge\tmerged\t\tcheck checks: ${reason}; check codex: Codex is out of quota today`
+      );
+    });
+
+    it("exits 2 on a --waive for a check that holds", async () => {
+      const result = await gate({}, ["--waive", "threads=nothing open anyway"]);
+      expect(result.exit).toBe(2);
+      expect(result.out).toContain("--waive threads: Review threads is met, so there is nothing to waive");
+      expect(merged(result.calls)).toBe(false);
+      expect(result.log()).toContain("\terror\tusage: --waive threads: Review threads is met");
+    });
+
+    it("exits 2 on a --waive for a check no lead may waive, or with no reason", async () => {
+      for (const [value, text] of [
+        ["verdict=the verifier is slow", '"verdict" is not a check the lead may waive. Waivable: checks, threads, codex.'],
+        ["instruction=Lee is away", '"instruction" is not a check the lead may waive'],
+        ["checks=", "check checks needs a reason: --waive checks=<reason>"],
+      ] as const) {
+        const result = await gate({ checks: [failing()] }, ["--waive", value]);
+        expect(result.exit).toBe(2);
+        expect(result.full).toContain(text);
+        expect(merged(result.calls)).toBe(false);
+      }
+    });
+
+    it("merges nothing when a waived check holds by merge time", async () => {
+      const result = await gate(
+        { checks: [running("e2e")], atMerge: { checks: [passing("e2e")] } },
+        ["--waive", `checks=${reason}`]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("something the run waives came to hold");
+      expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
+      expect(merged(result.calls)).toBe(false);
+    });
+  });
+
   describe("merge brief", () => {
     it("prints the repo's merge brief first, on a check or a refusal", async () => {
       for (const options of [{}, { checks: [failing("build")] }]) {
