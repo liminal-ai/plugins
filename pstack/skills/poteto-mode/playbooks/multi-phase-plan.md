@@ -135,7 +135,7 @@ Each live lane runs on its own cloud VM (the `cloud workers` line in the role fi
 ## Close the program
 
 - [ ] Every box above is checked with its evidence.
-- [ ] File the Owed items in the Later work appendix as tickets grouped by body of work, one per shared repair or decision and never one per item, and none for a Decided no item. Add each ticket id to the items it covers.
+- [ ] File the Owed items in the Later work appendix per poteto-mode's close-out rule: at most three new grouped tickets per project, each a checklist with evidence, and items still to be scoped in the project's `carry-forward` ticket. File none for a Decided no item. Add each ticket id to the items it covers.
 - [ ] Reply to the operator with the report the execution playbook names. Name every scope cut in the Later work appendix.
 - [ ] Delete the audit tick's `schedule_task`.
 
@@ -167,7 +167,7 @@ Keep this appendix current during the run. Each thing the program does not do go
 
 - <Item.> No, because <reason>.
 
-**Owed.** Work still to do after the program closes. Close-out files these as tickets grouped by body of work.
+**Owed.** Work still to do after the program closes. Close-out files these as grouped tickets per poteto-mode's close-out rule.
 
 - <Item.> <Where it was found, and the PR or finding it came from.>
 ````
