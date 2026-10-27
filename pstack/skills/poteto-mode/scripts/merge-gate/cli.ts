@@ -17,6 +17,7 @@ import { WatcherQueryError } from "../watch-pr/github.ts";
 import type { Repository } from "../watch-pr/types.ts";
 import { parsePrNumber } from "../watch-pr/types.ts";
 import {
+  BOX_FORMS,
   BOX_ID,
   type CheckWaiver,
   type Facts,
@@ -170,6 +171,13 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
       collectCheckWaiver,
       []
     );
+  program.addHelpText(
+    "after",
+    `
+The verdict lists each plan box under its pstack-verdict line as ${BOX_FORMS}.
+A changed box counts only when it names who accepted the changed bar and why, separated by the first comma.
+`
+  );
   program.parse(argv, { from: "user" });
   const raw = program.opts<{
     pr: PrRef["number"];

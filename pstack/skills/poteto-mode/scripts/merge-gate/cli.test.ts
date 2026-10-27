@@ -670,6 +670,35 @@ describe("merge-gate", () => {
       expect(result.out).toContain("  unread: box live-4: passed");
     });
 
+    const perfChanged = (note: string) =>
+      allDone().map((line) => (line === "box perf: done" ? `box perf: changed. ${note}` : line));
+
+    it("counts a changed box that names who accepted it and why, and lists it on the merge", async () => {
+      const result = await planGate(
+        [verdictWith(perfChanged("Lee, 14 of 8,190 arrivals off-slot are LIM-193"))],
+        ["--plan", plan, "--plan-pr", "GC2"]
+      );
+      expect(result.exit).toBe(0);
+      expect(result.out).toStartWith("MERGED: ");
+      expect(result.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 bar changed)\n  changed: box perf, accepted by Lee: 14 of 8,190 arrivals off-slot are LIM-193\n"
+      );
+    });
+
+    it("refuses a changed box with no who and why", async () => {
+      for (const note of ["", "Lee", "Lee,", ", the bar moved"]) {
+        const lines = note === ""
+          ? allDone().map((line) => (line === "box perf: done" ? "box perf: changed" : line))
+          : perfChanged(note);
+        const result = await planGate([verdictWith(lines)]);
+        expect(result.exit).toBe(1);
+        expect(result.missing[0]).toContain(
+          'Plan boxes. 1 changed box does not name who accepted the changed bar and why. Have the verifier write "box <id>: changed. <who>, <why>"'
+        );
+        expect(result.out).toContain("  no who and why: perf");
+      }
+    });
+
     it("checks skips even with no plan given", async () => {
       const result = await planGate(
         [verdictWith(["box perf: skipped. Not run."])],

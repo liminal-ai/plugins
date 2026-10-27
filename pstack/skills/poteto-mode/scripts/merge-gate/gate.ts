@@ -66,9 +66,9 @@ export interface IgnoredVerdict {
   readonly url: string;
 }
 
-export type BoxStatus = "done" | "n/a" | "skipped";
+export type BoxStatus = "done" | "n/a" | "skipped" | "changed";
 
-/** One `box <id>: <status>. <note>` line under a verdict. */
+/** One `box <id>: <status>. <note>` line under a verdict. A changed box's note is `<who accepted the change>, <why>`. */
 export interface VerdictBox {
   readonly id: string;
   readonly status: BoxStatus;
@@ -161,7 +161,8 @@ const VERDICT_PREFIX = "pstack-verdict:";
 const VERDICT_LINE =
   /^pstack-verdict: (PASS\+NOTES|PASS|FAIL) head=([0-9a-f]{40}) base=([0-9a-f]{40}) by=(\S+)$/;
 export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
-const BOX_LINE = /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped)(?:\. (.*))?$/;
+const BOX_LINE =
+  /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped|changed)(?:\. (.*))?$/;
 const BOX_PREFIX = /^(?:[-*] )?box /;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
 const APPROVED_IN = /^approved-in: \S+$/;
@@ -245,6 +246,16 @@ export function parseBoxLines(below: readonly string[]): {
       });
   }
   return { boxes, unread };
+}
+
+/** Who accepted a changed bar and why, read from the note `<who>, <why>`; null unless both are there. */
+export function barChange(
+  note: string
+): { readonly who: string; readonly why: string } | null {
+  const at = note.indexOf(",");
+  const who = note.slice(0, at).trim();
+  const why = note.slice(at + 1).trim();
+  return at === -1 || who === "" || why === "" ? null : { who, why };
 }
 
 /** Each waiver for a box the verdict did not skip or a check that holds; the run that gave it is a usage error. */
@@ -444,8 +455,8 @@ const verdict: Requirement = {
   },
 };
 
-const BOX_FORMS =
-  '"box <id>: done", "box <id>: n/a. <reason>" or "box <id>: skipped. <what did not run>"';
+export const BOX_FORMS =
+  '"box <id>: done", "box <id>: n/a. <reason>", "box <id>: skipped. <what did not run>" or "box <id>: changed. <who accepted the changed bar>, <why>"';
 
 const planBoxes: Requirement = {
   name: "Plan boxes",
@@ -458,8 +469,10 @@ const planBoxes: Requirement = {
     );
     const omitted = (plan?.ids ?? []).filter((id) => !listed.has(id));
     const noReason = fact.boxes.filter(
-      (box) => box.status !== "done" && box.note === ""
+      (box) => (box.status === "n/a" || box.status === "skipped") && box.note === ""
     );
+    const changed = fact.boxes.filter((box) => box.status === "changed");
+    const unowned = changed.filter((box) => barChange(box.note) === null);
     // Every agent posts as the same GitHub account, so no comment can say the lead accepted a skip; only the lead's own gate run can.
     const waived = new Set(waivers.map((waiver) => waiver.id));
     const unwaived = fact.boxes.filter(
@@ -491,6 +504,12 @@ const planBoxes: Requirement = {
       );
       details.push(`no reason: ${noReason.map((box) => box.id).join(" ")}`);
     }
+    if (unowned.length > 0) {
+      parts.push(
+        `${unowned.length} changed box${unowned.length === 1 ? " does" : "es do"} not name who accepted the changed bar and why. Have the verifier write "box <id>: changed. <who>, <why>"`
+      );
+      details.push(`no who and why: ${unowned.map((box) => box.id).join(" ")}`);
+    }
     if (unwaived.length > 0) {
       parts.push(
         `${unwaived.length} skipped box${unwaived.length === 1 ? " is" : "es are"} not waived by the lead, so the verdict is not a pass. Run the box and get a new verdict, or, if the lead accepts the skip, the lead runs the gate with "--accept-skip <id>=<reason>"`
@@ -504,7 +523,26 @@ const planBoxes: Requirement = {
       plan === null
         ? `no plan given, ${fact.boxes.length} box${fact.boxes.length === 1 ? "" : "es"} listed`
         : `all ${plan.ids.length} required boxes of ${plan.pr} listed`;
-    return met(skipped === 0 ? scope : `${scope}, ${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`);
+    const notes = [
+      scope,
+      ...(skipped === 0
+        ? []
+        : [`${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`]),
+      ...(changed.length === 0
+        ? []
+        : [`${changed.length} bar${changed.length === 1 ? "" : "s"} changed`]),
+    ];
+    return met(
+      notes.join(", "),
+      changed.length === 0
+        ? undefined
+        : changed.flatMap((box) => {
+            const change = barChange(box.note);
+            return change === null
+              ? []
+              : [`changed: box ${box.id}, accepted by ${change.who}: ${change.why}`];
+          })
+    );
   },
 };
 
