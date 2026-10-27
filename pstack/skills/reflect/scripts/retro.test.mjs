@@ -741,6 +741,10 @@ test("registers a delegated child's thread id", (t) => {
   const child = "thread:delegated-task:command%3Amcp%3A08c364f5-0c24-4c5a-bcb9-d058b5f7686c%3Adelegate-task%3Aslice-lane-7";
   assert.equal(run(["register", child, "--title", "lane 7", "--project", "dungeonwright"]).code, 0);
   assert.ok(existsSync(join(home(child), "thread.json")));
+  for (const key of ["review~r1", "review-v1.", "a(b)!*'c"]) {
+    const id = `thread:delegated-task:command%3Amcp%3A08c364f5-0c24-4c5a-bcb9-d058b5f7686c%3Adelegate-task%3A${encodeURIComponent(key)}`;
+    assert.equal(run(["register", id]).code, 0, key);
+  }
   assert.match(run(["status"]).out, /lane 7/);
 });
 
