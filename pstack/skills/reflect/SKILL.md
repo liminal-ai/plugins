@@ -45,4 +45,4 @@ A retro round reviews several threads' reflects together. `retro.mjs status` wri
 
 Apply each approved edit where the skill's source lives, never only in the installed copy, which a reinstall overwrites. A pstack skill changes through a PR to `liminal-ai/pstack-lim` against `lim`, then a reinstall per that repo's `FORK.md`. pstack-lim does not own a vendor skill or the user's own draft that exists only in `~/.agents/skills`. Name the owner to the user and leave that edit to them.
 
-Before you close the round, file each follow-up the user kept as a Linear backlog issue in team LH, in the project that owns it: "pstack fork", "T3 fork" or "limhealth-next". Search for a matching issue first, and add each issue id to `decisions.md`.
+Before you close the round, file the follow-ups the user kept in Linear as a few tickets grouped by body of work, never one per item, each in the project that the owning repo's AGENTS.md names (Retro rounds for process items). Read the project's open tickets first and add to a matching grouped ticket. Add each issue id to `decisions.md`.
