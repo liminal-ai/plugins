@@ -20,6 +20,7 @@ case "$*" in
   "repo view"*) cat "$FAKE_GH_DIR/repo.json" ;;
   "pr view"*"state,mergedAt,baseRefName,mergeCommit"*) cat "$FAKE_GH_DIR/readback.json" ;;
   "pr view"*) cat "$FAKE_GH_DIR/pr.json" ;;
+  "pr list"*) cat "$FAKE_GH_DIR/merged.json" ;;
   "pr merge"*) ;;
   "pr comment"*) ;;
   *"repos/broken/repo/contents/"*) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;
@@ -743,4 +744,29 @@ it("throws when the merge brief read fails for any reason but a 404", async () =
   await expect(
     new GhGitHub().mergeBrief({ owner: "broken", repo: "repo" })
   ).rejects.toThrow("gh: Server Error (HTTP 502)");
+});
+
+it("lists merged PRs with gh pr list, naming the repo and the date, and drops any merged before it", async () => {
+  const before = new Set(readdirSync(join(dir, "calls")));
+  writeFileSync(
+    join(dir, "merged.json"),
+    JSON.stringify([
+      { number: 7, mergedAt: "2026-10-20T03:00:00Z", mergedBy: { login: "leegmoore" }, headRefOid: "a".repeat(40) },
+      { number: 6, mergedAt: "2026-10-18T23:59:59Z", mergedBy: null, headRefOid: "b".repeat(40) },
+    ])
+  );
+  const merged = await new GhGitHub().mergedPullRequests({ owner: "owner", repo: "repo" }, "2026-10-19");
+  expect(merged).toEqual([
+    { number: 7, mergedAt: "2026-10-20T03:00:00Z", mergedBy: "leegmoore", head: "a".repeat(40) },
+  ]);
+  const calls = readdirSync(join(dir, "calls"))
+    .filter((name) => !before.has(name))
+    .map((name) => readFileSync(join(dir, "calls", name), "utf8").split("\0").slice(0, -1));
+  expect(calls).toEqual([
+    [
+      "pr", "list", "--repo", "owner/repo", "--state", "merged",
+      "--search", "merged:>=2026-10-19", "--limit", "1000",
+      "--json", "number,mergedAt,mergedBy,headRefOid",
+    ],
+  ]);
 });

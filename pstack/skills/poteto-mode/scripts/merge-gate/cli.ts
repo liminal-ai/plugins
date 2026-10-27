@@ -14,6 +14,7 @@ import {
   Option,
 } from "commander";
 import { WatcherQueryError } from "../watch-pr/github.ts";
+import { audit } from "./audit.ts";
 import type { Repository } from "../watch-pr/types.ts";
 import { parsePrNumber } from "../watch-pr/types.ts";
 import {
@@ -84,7 +85,7 @@ interface RunRecord {
 const LOG_HEADER = "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived\n";
 const OLD_LOG_HEADER = "ts\trepo\tpr\thead\tmode\toutcome\tmissing\n";
 
-function parseRepo(value: string): Repository {
+export function parseRepo(value: string): Repository {
   const match = /^([\w.-]+)\/([\w.-]+)$/.exec(value);
   if (match === null) throw new InvalidArgumentError("must be <owner>/<name>");
   return { owner: match[1], repo: match[2] };
@@ -173,6 +174,8 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
   program.addHelpText(
     "after",
     `
+Run "merge-gate audit --help" for the audit of merges against gate receipts.
+
 The verdict lists each plan box under its pstack-verdict line as ${BOX_FORMS}.
 A changed box counts only when it names who accepted the changed bar and why, separated by the first comma.
 `
@@ -206,9 +209,12 @@ A changed box counts only when it names who accepted the changed bar and why, se
 
 const cell = (value: string): string => value.replace(/[\t\r\n]+/g, " ");
 
+export const runLog = (store: string): string =>
+  join(store, "merge-gate", "runs.tsv");
+
 function appendRun(runtime: Runtime, run: RunRecord): void {
   const dir = join(runtime.store, "merge-gate");
-  const file = join(dir, "runs.tsv");
+  const file = runLog(runtime.store);
   mkdirSync(dir, { recursive: true });
   if (!existsSync(file)) appendFileSync(file, LOG_HEADER);
   else {
@@ -235,7 +241,7 @@ interface Decision {
   readonly run: RunRecord;
 }
 
-const message = (error: unknown): string =>
+export const message = (error: unknown): string =>
   error instanceof ReadError || error instanceof WatcherQueryError
     ? error.message
     : `unexpected error: ${error instanceof Error ? error.message : String(error)}`;
@@ -481,6 +487,7 @@ export async function main(
   argv: readonly string[],
   runtime: Runtime = realRuntime()
 ): Promise<number> {
+  if (argv[0] === "audit") return audit(argv.slice(1), runtime);
   let options: Options;
   try {
     options = parseArgs(argv, runtime);
