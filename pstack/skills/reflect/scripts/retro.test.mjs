@@ -248,7 +248,7 @@ test("a round gathers waiting threads, refuses a second open, and closes only wi
   assert.match(readFileSync(join(dir, "README.md"), "utf-8"), /merge-gate\.md/);
 
   assert.match(run(["open", "--threads", C]).err, /round 2026-10-20 is open/);
-  assert.match(run(["status"]).out, /Round due: no, round 2026-10-20 has been open/);
+  assert.match(run(["status"], "2026-10-21T09:00:00Z").out, /Round due: no, round 2026-10-20 has been open/);
 
   writeFileSync(join(dir, "synthesis.md"), "s\n");
   writeFileSync(join(dir, "decisions.md"), "d\n");
