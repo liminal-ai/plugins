@@ -507,27 +507,29 @@ function backupFailed(state, step, r) {
   console.error(`retro: backup ${step} failed (${error}); nothing new is pushed, and the next retro command that writes tries again`);
 }
 
-// Replays this machine's unpushed commits on top of what other machines pushed.
-// REGISTRY.md is generated, so a conflict there is settled by generating it again from the merged files.
-function syncWithOrigin(upstream) {
+const GENERATED = "REGISTRY.md";
+
+function regenerateConflictedRegistry() {
+  refreshRegistry({ secrets: [], failure: null });
+  git("add", GENERATED);
+}
+
+function rebaseOntoOtherMachines(upstream) {
   if (git("merge-base", "--is-ancestor", upstream, "HEAD").status === 0) return null;
   for (let step = git("rebase", "-q", upstream); step.status !== 0; step = git("rebase", "--continue")) {
     const conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.split("\n").filter(Boolean);
-    if (!conflicts.length || conflicts.some((f) => f !== "REGISTRY.md")) {
+    const unsettled = conflicts.filter((f) => f !== GENERATED);
+    if (!conflicts.length || unsettled.length) {
       git("rebase", "--abort");
       if (!conflicts.length) return step;
-      const files = conflicts.filter((f) => f !== "REGISTRY.md").map((f) => join(RETRO, f));
-      return { stderr: `${files.join(", ")} changed both here and on another machine. This machine's versions stay on disk; ask the operator to settle each file so it holds what both machines should keep` };
+      return { stderr: `${unsettled.map((f) => join(RETRO, f)).join(", ")} changed both here and on another machine. This machine's versions stay on disk; ask the operator to settle each file so it holds what both machines should keep` };
     }
-    refreshRegistry({ secrets: [], failure: null });
-    git("add", "REGISTRY.md");
+    regenerateConflictedRegistry();
   }
   return null;
 }
 
 // Every write ends here. A backup failure never fails the command: the work stays on disk and the next write retries.
-// It commits, rebases onto what other machines pushed, scans the commits the push would send, then pushes that commit by SHA,
-// so a file written meanwhile waits for the next write's commit and scan.
 function save(message) {
   if (!existsSync(GIT_DIR)) {
     refreshRegistry();
@@ -537,10 +539,10 @@ function save(message) {
   refreshRegistry({ secrets: [], failure: null });
   stageAll();
   const upstream = `refs/remotes/origin/${BACKUP_BRANCH}`;
-  // A commit held back for a secret or a sync conflict would ride along in every later push or rebase, so fold the unpushed commits into this one.
   const base = git("merge-base", "HEAD", upstream).stdout.trim();
+  const heldBackCommitsWouldRecur = prior.secrets.length || prior.failure?.step === "sync";
   let body = [];
-  if ((prior.secrets.length || prior.failure?.step === "sync") && base) {
+  if (heldBackCommitsWouldRecur && base) {
     body = git("log", "--format=%s", "HEAD", "--not", "--remotes=origin").stdout.trim().split("\n").filter(Boolean);
     git("reset", "-q", "--soft", base);
   }
@@ -551,10 +553,10 @@ function save(message) {
   if (!git("rev-parse", "--verify", "-q", "HEAD").stdout.trim()) return;
   const fetch = remoteGit("fetch", "-q", "origin");
   if (fetch.status !== 0) return backupFailed(prior, "fetch", fetch);
-  const synced = git("rev-parse", "--verify", "-q", upstream).stdout.trim() && syncWithOrigin(upstream);
+  const synced = git("rev-parse", "--verify", "-q", upstream).stdout.trim() && rebaseOntoOtherMachines(upstream);
   if (synced) return backupFailed(prior, "sync", synced);
-  const head = git("rev-parse", "--verify", "-q", "HEAD").stdout.trim();
-  const range = [head, "--not", "--remotes=origin"];
+  const scanned = git("rev-parse", "--verify", "-q", "HEAD").stdout.trim();
+  const range = [scanned, "--not", "--remotes=origin"];
   const unpushed = git("rev-list", "--count", ...range);
   const pending = unpushed.status !== 0 || unpushed.stdout.trim() !== "0";
   const scanner = pending ? findGitleaks() : {};
@@ -567,7 +569,7 @@ function save(message) {
     return;
   }
   if (pending) {
-    const push = remoteGit("push", "-q", "origin", `${head}:refs/heads/${BACKUP_BRANCH}`);
+    const push = remoteGit("push", "-q", "origin", `${scanned}:refs/heads/${BACKUP_BRANCH}`);
     if (push.status !== 0) return backupFailed(state, "push", push);
   }
   if (state.failure) {

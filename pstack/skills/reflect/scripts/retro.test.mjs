@@ -90,7 +90,6 @@ function backedUp(t, store) {
   return { remote, git, remoteGit, pushed, pushedFiles };
 }
 
-// Another machine: its own store, whose retro folder is a clone of the same backup remote.
 function otherMachine(t, remote) {
   const box = sandbox(t);
   const retro = join(box.store, "retro");
