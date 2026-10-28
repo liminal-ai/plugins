@@ -507,24 +507,50 @@ function backupFailed(state, step, r) {
   console.error(`retro: backup ${step} failed (${error}); nothing new is pushed, and the next retro command that writes tries again`);
 }
 
-const GENERATED = "REGISTRY.md";
+const later = (a, b) => (!a || (b && new Date(b) > new Date(a)) ? b : a);
 
-function regenerateConflictedRegistry() {
-  refreshRegistry({ secrets: [], failure: null });
-  git("add", GENERATED);
+// Each side of a rebase conflict as git stages it, or null when that side deleted the file or it is not JSON.
+function conflictSide(stage, file) {
+  const r = git("show", `:${stage}:${file}`);
+  try {
+    return r.status === 0 ? JSON.parse(r.stdout) : null;
+  } catch {
+    return null;
+  }
 }
+
+// Files the sync settles itself; any other conflicted file needs the operator.
+const SETTLERS = {
+  "reminder.json": (file) => {
+    const [a, b] = [conflictSide(2, file), conflictSide(3, file)];
+    if (!a || !b) return false;
+    const asked = later(a.lastAskedAt, b.lastAskedAt);
+    writeJson(join(RETRO, file), {
+      ...a,
+      ...b,
+      lastAskedAt: asked,
+      reason: asked === b.lastAskedAt ? b.reason : a.reason,
+      lastAnsweredAt: later(a.lastAnsweredAt, b.lastAnsweredAt),
+    });
+    return git("add", file).status === 0;
+  },
+  "REGISTRY.md": (file) => {
+    refreshRegistry({ secrets: [], failure: null });
+    return git("add", file).status === 0;
+  },
+};
 
 function rebaseOntoOtherMachines(upstream) {
   if (git("merge-base", "--is-ancestor", upstream, "HEAD").status === 0) return null;
   for (let step = git("rebase", "-q", upstream); step.status !== 0; step = git("rebase", "--continue")) {
     const conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.split("\n").filter(Boolean);
-    const unsettled = conflicts.filter((f) => f !== GENERATED);
+    const unsettled = conflicts.filter((f) => !SETTLERS[f]);
+    if (!unsettled.length) unsettled.push(...conflicts.filter((f) => !SETTLERS[f](f)));
     if (!conflicts.length || unsettled.length) {
       git("rebase", "--abort");
       if (!conflicts.length) return step;
       return { stderr: `${unsettled.map((f) => join(RETRO, f)).join(", ")} changed both here and on another machine. This machine's versions stay on disk; ask the operator to settle each file so it holds what both machines should keep` };
     }
-    regenerateConflictedRegistry();
   }
   return null;
 }

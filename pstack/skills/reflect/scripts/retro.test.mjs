@@ -725,31 +725,56 @@ test("a file both machines changed stops the sync, keeps this machine's work and
   one.run(["register", A]);
   const two = otherMachine(t, remote);
   const retro = join(two.store, "retro");
-  const reminder = join(retro, "reminder.json");
+  const notes = join(two.home(A), "notes.md");
   assert.equal(one.run(["register", C]).err, "");
-  assert.equal(one.run(["remind", "--answered"], "2026-10-21T09:00:00Z").err, "");
+  writeFileSync(join(one.home(A), "notes.md"), "one\n");
+  assert.equal(one.run(["register", A]).err, "");
 
-  const stopped = two.run(["remind", "--answered"], "2026-10-22T09:00:00Z");
+  writeFileSync(notes, "two\n");
+  const stopped = two.run(["register", A]);
   assert.equal(stopped.code, 0);
-  assert.match(stopped.err, new RegExp(`retro: backup sync failed \\(${reminder} changed both here and on another machine\\. .*ask the operator to settle each file.*the next retro command that writes tries again`));
+  assert.match(stopped.err, new RegExp(`retro: backup sync failed \\(${notes} changed both here and on another machine\\. .*ask the operator to settle each file.*the next retro command that writes tries again`));
   assert.doesNotMatch(stopped.err, /REGISTRY\.md/, "REGISTRY.md is never the operator's to settle");
-  assert.match(JSON.parse(readFileSync(reminder, "utf-8")).lastAnsweredAt, /^2026-10-22T/, "this machine's answer stays on disk");
-  assert.equal(two.git("show", "HEAD:reminder.json").stdout, readFileSync(reminder, "utf-8"), "and committed");
+  assert.equal(readFileSync(notes, "utf-8"), "two\n", "this machine's version stays on disk");
+  assert.equal(two.git("show", `HEAD:${A}/notes.md`).stdout, "two\n", "and committed");
   assert.ok(!existsSync(join(retro, ".git", "rebase-merge")) && !existsSync(join(retro, ".git", "rebase-apply")), "no rebase is left half done");
   assert.equal(two.git("status", "--porcelain").stdout.split("\n").filter((l) => l && !l.endsWith("REGISTRY.md")).join("\n"), "");
   assert.equal(JSON.parse(readFileSync(join(retro, ".git", "retro-backup.json"), "utf-8")).failure.step, "sync");
-  assert.match(readFileSync(join(retro, "REGISTRY.md"), "utf-8"), new RegExp(`## Not backed up: the last backup failed\n\nsync failed at \\S+: ${reminder} changed both here`));
-  assert.deepEqual(pushed(), ["retro: remind answered", `retro: register ${C}`, `retro: register ${A}`]);
+  assert.match(readFileSync(join(retro, "REGISTRY.md"), "utf-8"), new RegExp(`## Not backed up: the last backup failed\n\nsync failed at \\S+: ${notes} changed both here`));
+  assert.deepEqual(pushed(), [`retro: register ${A}`, `retro: register ${C}`, `retro: register ${A}`]);
 
-  assert.match(two.run(["register", B]).err, /backup sync failed .*reminder\.json/, "an unsettled file stops every write");
-  writeFileSync(reminder, readFileSync(join(one.store, "retro", "reminder.json")));
+  assert.match(two.run(["register", B]).err, /backup sync failed .*notes\.md/, "an unsettled file stops every write");
+  writeFileSync(notes, readFileSync(join(one.home(A), "notes.md")));
   const settled = two.run(["register", B, "--title", "settled"]);
   assert.equal(settled.err, "");
   assert.equal(pushed()[0], `retro: register ${B}`);
+  assert.equal(remoteGit("show", `main:${A}/notes.md`).stdout, "one\n");
   assert.ok(pushedFiles().includes(`${B}/thread.json`) && pushedFiles().includes(`${C}/thread.json`), "the settled write keeps both machines' records");
   assert.equal(two.git("rev-parse", "HEAD").stdout, remoteGit("rev-parse", "main").stdout);
   assert.equal(JSON.parse(readFileSync(join(retro, ".git", "retro-backup.json"), "utf-8")).failure, null);
   assert.doesNotMatch(readFileSync(join(retro, "REGISTRY.md"), "utf-8"), /Not backed up/);
+});
+
+test("reminder.json changed on both machines settles to the later ask and the later answer", (t) => {
+  const one = sandbox(t);
+  const { remote, remoteGit, pushed } = backedUp(t, one.store);
+  one.run(["register", A]);
+  const two = otherMachine(t, remote);
+  const reminder = (box) => join(box.store, "retro", "reminder.json");
+  writeFileSync(reminder(one), JSON.stringify({ lastAskedAt: "2026-10-21T08:00:00+00:00", reason: "asked on one" }));
+  assert.equal(one.run(["remind", "--answered"], "2026-10-21T09:00:00Z").err, "");
+  writeFileSync(reminder(two), JSON.stringify({ lastAskedAt: "2026-10-21T09:30:00+05:00", reason: "asked on two" }));
+
+  const synced = two.run(["remind", "--answered"], "2026-10-22T09:00:00Z");
+  assert.equal(synced.err, "");
+  const settled = JSON.parse(remoteGit("show", "main:reminder.json").stdout);
+  assert.equal(new Date(settled.lastAskedAt).toISOString(), "2026-10-21T08:00:00.000Z", "the later instant wins even when its string sorts first");
+  assert.equal(settled.reason, "asked on one", "the reason comes with its ask");
+  assert.equal(new Date(settled.lastAnsweredAt).toISOString(), "2026-10-22T09:00:00.000Z");
+  assert.deepEqual(JSON.parse(readFileSync(reminder(two), "utf-8")), settled);
+  assert.deepEqual(pushed().slice(0, 2), ["retro: remind answered", "retro: remind answered"]);
+  assert.equal(two.git("rev-parse", "HEAD").stdout, remoteGit("rev-parse", "main").stdout);
+  assert.equal(JSON.parse(readFileSync(join(two.store, "retro", ".git", "retro-backup.json"), "utf-8")).failure, null);
 });
 
 test("after a sync, the secret scan covers exactly the rebased commits the push sends", (t) => {
