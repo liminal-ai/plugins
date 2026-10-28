@@ -87,7 +87,18 @@ function backedUp(t, store) {
   writeFileSync(join(retro, ".gitignore"), ".lock\n*.tmp-*\n");
   const pushed = () => remoteGit("log", "--format=%s", "main").stdout.trim().split("\n").filter(Boolean);
   const pushedFiles = () => remoteGit("ls-tree", "-r", "--name-only", "main").stdout.trim().split("\n");
-  return { remote, git, pushed, pushedFiles };
+  return { remote, git, remoteGit, pushed, pushedFiles };
+}
+
+// Another machine: its own store, whose retro folder is a clone of the same backup remote.
+function otherMachine(t, remote) {
+  const box = sandbox(t);
+  const retro = join(box.store, "retro");
+  spawnSync("git", ["clone", "-q", remote, retro]);
+  const git = (...args) => spawnSync("git", ["-C", retro, ...args], { encoding: "utf-8" });
+  git("config", "user.email", "t@example.com");
+  git("config", "user.name", "t");
+  return { ...box, git };
 }
 
 const FAKE_KEY = `-----BEGIN OPENSSH PRIVATE KEY-----\n${"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW".repeat(3)}\n-----END OPENSSH PRIVATE KEY-----\n`;
@@ -550,19 +561,29 @@ test("each write commits the retro folder and pushes it to main", (t) => {
   assert.deepEqual(pushed().slice(0, 3), ["retro: remind answered", "retro: close round 2026-10-20", "retro: open round 2026-10-20"]);
 });
 
-test("a failed push never fails the command, and the next write pushes what waited", (t) => {
+test("a failed fetch or push never fails the command, and the next write pushes what waited", (t) => {
   const { store, run } = sandbox(t);
   const { remote, git, pushed } = backedUp(t, store);
+  const backup = () => JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8"));
   git("remote", "set-url", "origin", `${remote}-missing`);
-  const failed = run(["register", A]);
-  assert.equal(failed.code, 0);
-  assert.match(failed.err, /retro: backup push failed/);
-  assert.equal(JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8")).failure.step, "push");
+  const offline = run(["register", A]);
+  assert.equal(offline.code, 0);
+  assert.match(offline.err, /retro: backup fetch failed/);
+  assert.equal(backup().failure.step, "fetch");
   assert.deepEqual(pushed(), []);
+
   git("remote", "set-url", "origin", remote);
+  writeFileSync(join(remote, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const rejected = run(["register", C]);
+  assert.equal(rejected.code, 0);
+  assert.match(rejected.err, /retro: backup push failed/);
+  assert.equal(backup().failure.step, "push");
+  assert.deepEqual(pushed(), []);
+
+  rmSync(join(remote, "hooks", "pre-receive"));
   assert.equal(run(["register", B]).err, "");
-  assert.deepEqual(pushed(), [`retro: register ${B}`, `retro: register ${A}`]);
-  assert.equal(JSON.parse(readFileSync(join(store, "retro", ".git", "retro-backup.json"), "utf-8")).failure, null);
+  assert.deepEqual(pushed(), [`retro: register ${B}`, `retro: register ${C}`, `retro: register ${A}`]);
+  assert.equal(backup().failure, null);
 });
 
 test("a possible secret blocks the push and heads REGISTRY.md until it is removed", (t) => {
@@ -659,6 +680,108 @@ test("a file written during the scan or before the push is never pushed unscanne
   assert.equal(pushed().length, 3);
   assert.ok(!leaked(), "the held-back commit is folded away, not pushed");
   assert.equal(git("rev-parse", "HEAD").stdout, spawnSync("git", ["--git-dir", remote, "rev-parse", "main"], { encoding: "utf-8" }).stdout);
+});
+
+test("two machines writing to one backup both end up pushed, each rebasing onto the other's commits", (t) => {
+  const one = sandbox(t);
+  const { remote, remoteGit, pushed, pushedFiles } = backedUp(t, one.store);
+  assert.equal(one.run(["register", A]).err, "");
+  const two = otherMachine(t, remote);
+  assert.equal(one.run(["register", A, "--title", "first"]).err, "");
+  assert.equal(two.run(["register", B]).err, "", "the second machine's write rebases onto the first's");
+  assert.equal(one.run(["register", C]).err, "", "and the first's next write rebases onto the second's");
+  assert.deepEqual(pushed(), [`retro: register ${C}`, `retro: register ${B}`, `retro: register ${A}`, `retro: register ${A}`]);
+  assert.equal(remoteGit("rev-list", "--merges", "main").stdout, "", "the backup's history stays a line");
+  for (const id of [A, B, C]) assert.ok(pushedFiles().includes(`${id}/thread.json`));
+  assert.ok(existsSync(join(one.home(B), "thread.json")), "each machine gets the other's records");
+  assert.equal(one.record(A).title, "first");
+  assert.equal(two.run(["register", B, "--title", "second"]).err, "");
+  assert.ok(existsSync(join(two.home(C), "thread.json")));
+  assert.equal(two.record(A).title, "first");
+});
+
+test("unpushed commits whose only overlap with the other machine is REGISTRY.md sync on their own", (t) => {
+  const one = sandbox(t);
+  const { remote, remoteGit, pushed } = backedUp(t, one.store);
+  one.run(["register", A]);
+  const two = otherMachine(t, remote);
+  two.git("remote", "set-url", "origin", `${remote}-missing`);
+  two.run(["register", B]);
+  two.run(["register", B, "--project", "offline"]);
+  assert.equal(one.run(["register", C]).err, "");
+  two.git("remote", "set-url", "origin", remote);
+  const synced = two.run(["register", B, "--title", "back online"]);
+  assert.equal(synced.err, "");
+  assert.equal(pushed().length, 5, "all three of the second machine's commits are pushed");
+  const registry = remoteGit("show", "main:REGISTRY.md").stdout;
+  assert.doesNotMatch(registry, /^(<<<<<<<|=======|>>>>>>>)/m);
+  for (const label of ["[aaaaaaaa](", "[back online](", "[cccccccc]("]) assert.ok(registry.includes(label), `the pushed REGISTRY.md lists ${label}`);
+  assert.equal(readFileSync(join(two.store, "retro", "REGISTRY.md"), "utf-8"), registry);
+  assert.equal(JSON.parse(readFileSync(join(two.store, "retro", ".git", "retro-backup.json"), "utf-8")).failure, null);
+});
+
+test("a file both machines changed stops the sync, keeps this machine's work and names the file; the next write retries once it is settled", (t) => {
+  const one = sandbox(t);
+  const { remote, remoteGit, pushed, pushedFiles } = backedUp(t, one.store);
+  one.run(["register", A]);
+  const two = otherMachine(t, remote);
+  const retro = join(two.store, "retro");
+  const reminder = join(retro, "reminder.json");
+  assert.equal(one.run(["register", C]).err, "");
+  assert.equal(one.run(["remind", "--answered"], "2026-10-21T09:00:00Z").err, "");
+
+  const stopped = two.run(["remind", "--answered"], "2026-10-22T09:00:00Z");
+  assert.equal(stopped.code, 0);
+  assert.match(stopped.err, new RegExp(`retro: backup sync failed \\(${reminder} changed both here and on another machine\\. .*ask the operator to settle each file.*the next retro command that writes tries again`));
+  assert.doesNotMatch(stopped.err, /REGISTRY\.md/, "REGISTRY.md is never the operator's to settle");
+  assert.match(JSON.parse(readFileSync(reminder, "utf-8")).lastAnsweredAt, /^2026-10-22T/, "this machine's answer stays on disk");
+  assert.equal(two.git("show", "HEAD:reminder.json").stdout, readFileSync(reminder, "utf-8"), "and committed");
+  assert.ok(!existsSync(join(retro, ".git", "rebase-merge")) && !existsSync(join(retro, ".git", "rebase-apply")), "no rebase is left half done");
+  assert.equal(two.git("status", "--porcelain").stdout.split("\n").filter((l) => l && !l.endsWith("REGISTRY.md")).join("\n"), "");
+  assert.equal(JSON.parse(readFileSync(join(retro, ".git", "retro-backup.json"), "utf-8")).failure.step, "sync");
+  assert.match(readFileSync(join(retro, "REGISTRY.md"), "utf-8"), new RegExp(`## Not backed up: the last backup failed\n\nsync failed at \\S+: ${reminder} changed both here`));
+  assert.deepEqual(pushed(), ["retro: remind answered", `retro: register ${C}`, `retro: register ${A}`]);
+
+  assert.match(two.run(["register", B]).err, /backup sync failed .*reminder\.json/, "an unsettled file stops every write");
+  writeFileSync(reminder, readFileSync(join(one.store, "retro", "reminder.json")));
+  const settled = two.run(["register", B, "--title", "settled"]);
+  assert.equal(settled.err, "");
+  assert.equal(pushed()[0], `retro: register ${B}`);
+  assert.ok(pushedFiles().includes(`${B}/thread.json`) && pushedFiles().includes(`${C}/thread.json`), "the settled write keeps both machines' records");
+  assert.equal(two.git("rev-parse", "HEAD").stdout, remoteGit("rev-parse", "main").stdout);
+  assert.equal(JSON.parse(readFileSync(join(retro, ".git", "retro-backup.json"), "utf-8")).failure, null);
+  assert.doesNotMatch(readFileSync(join(retro, "REGISTRY.md"), "utf-8"), /Not backed up/);
+});
+
+test("after a sync, the secret scan covers exactly the rebased commits the push sends", (t) => {
+  const one = sandbox(t);
+  const { remote, remoteGit, pushed } = backedUp(t, one.store);
+  one.run(["register", A]);
+  const two = otherMachine(t, remote);
+  assert.equal(two.run(["register", B]).err, "");
+  const bin = scratchDir(t);
+  const ranges = join(bin, "ranges");
+  writeFileSync(join(bin, "gitleaks"), `#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--log-opts" ]; do shift; done\necho "$2" >> ${ranges}\nexit 0\n`, { mode: 0o755 });
+  const recording = { PATH: `${bin}:${process.env.PATH}` };
+  const leaked = () => remoteGit("log", "-p", "--text", "main").stdout.includes("BEGIN OPENSSH");
+
+  assert.equal(one.run(["register", C]).err, "");
+  writeFileSync(join(two.home(B), "notes.md"), `context\n${FAKE_KEY}`);
+  const blocked = two.run(["register", B], undefined, recording);
+  assert.match(blocked.err, new RegExp(`possible secret in ${join(two.home(B), "notes.md")}`));
+  assert.equal(pushed()[0], `retro: register ${C}`);
+  assert.ok(!leaked());
+  const blockedRange = readFileSync(ranges, "utf-8").trim().split("\n").at(-1);
+  assert.equal(blockedRange, `${two.git("rev-parse", "HEAD").stdout.trim()} --not --remotes=origin`, "the scan read the commit as rebased");
+  assert.equal(two.git("merge-base", "--is-ancestor", "@{u}", "HEAD").status, 0);
+
+  writeFileSync(join(two.home(B), "notes.md"), "context\n");
+  assert.equal(one.run(["register", A, "--title", "meanwhile"]).err, "");
+  assert.equal(two.run(["register", B, "--title", "clean"], undefined, recording).err, "");
+  const sent = remoteGit("rev-parse", "main").stdout.trim();
+  assert.equal(readFileSync(ranges, "utf-8").trim().split("\n").at(-1), `${sent} --not --remotes=origin`, "the scan read the very commit that was pushed");
+  assert.deepEqual(pushed().slice(0, 3), [`retro: register ${B}`, `retro: register ${A}`, `retro: register ${C}`]);
+  assert.ok(!leaked(), "the held-back commit never reaches the remote");
 });
 
 // A PATH with git and flock but no gitleaks, and a HOME with no installed scanner.

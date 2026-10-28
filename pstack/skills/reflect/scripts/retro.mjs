@@ -50,7 +50,7 @@ const LOCK = join(RETRO, ".lock");
 const GIT_DIR = join(RETRO, ".git");
 const BACKUP_STATE = join(GIT_DIR, "retro-backup.json");
 const GITLEAKS_REPORT = join(GIT_DIR, "retro-gitleaks.json");
-const PUSH_TIMEOUT_MS = 15000;
+const REMOTE_TIMEOUT_MS = 15000;
 const BACKUP_BRANCH = "main";
 // The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
 const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
@@ -438,8 +438,10 @@ function refreshRegistry(backup = backupState()) {
 }
 
 function git(...args) {
-  return spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", maxBuffer: 1 << 30, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  return spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", maxBuffer: 1 << 30, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true" } });
 }
+
+const remoteGit = (...args) => spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", timeout: REMOTE_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
 
 function backupState() {
   try {
@@ -505,8 +507,26 @@ function backupFailed(state, step, r) {
   console.error(`retro: backup ${step} failed (${error}); nothing new is pushed, and the next retro command that writes tries again`);
 }
 
+// Replays this machine's unpushed commits on top of what other machines pushed.
+// REGISTRY.md is generated, so a conflict there is settled by generating it again from the merged files.
+function syncWithOrigin(upstream) {
+  if (git("merge-base", "--is-ancestor", upstream, "HEAD").status === 0) return null;
+  for (let step = git("rebase", "-q", upstream); step.status !== 0; step = git("rebase", "--continue")) {
+    const conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.split("\n").filter(Boolean);
+    if (!conflicts.length || conflicts.some((f) => f !== "REGISTRY.md")) {
+      git("rebase", "--abort");
+      if (!conflicts.length) return step;
+      const files = conflicts.filter((f) => f !== "REGISTRY.md").map((f) => join(RETRO, f));
+      return { stderr: `${files.join(", ")} changed both here and on another machine. This machine's versions stay on disk; ask the operator to settle each file so it holds what both machines should keep` };
+    }
+    refreshRegistry({ secrets: [], failure: null });
+    git("add", "REGISTRY.md");
+  }
+  return null;
+}
+
 // Every write ends here. A backup failure never fails the command: the work stays on disk and the next write retries.
-// It commits first, scans the commits the push would send, then pushes that commit by SHA,
+// It commits, rebases onto what other machines pushed, scans the commits the push would send, then pushes that commit by SHA,
 // so a file written meanwhile waits for the next write's commit and scan.
 function save(message) {
   if (!existsSync(GIT_DIR)) {
@@ -516,19 +536,24 @@ function save(message) {
   const prior = backupState();
   refreshRegistry({ secrets: [], failure: null });
   stageAll();
-  // A commit held back for a secret would ride along in every later push, so fold the unpushed commits into this one.
-  const pushedHead = git("rev-parse", "--verify", "-q", `refs/remotes/origin/${BACKUP_BRANCH}`).stdout.trim();
+  const upstream = `refs/remotes/origin/${BACKUP_BRANCH}`;
+  // A commit held back for a secret or a sync conflict would ride along in every later push or rebase, so fold the unpushed commits into this one.
+  const base = git("merge-base", "HEAD", upstream).stdout.trim();
   let body = [];
-  if (prior.secrets.length && pushedHead) {
+  if ((prior.secrets.length || prior.failure?.step === "sync") && base) {
     body = git("log", "--format=%s", "HEAD", "--not", "--remotes=origin").stdout.trim().split("\n").filter(Boolean);
-    git("reset", "-q", "--soft", pushedHead);
+    git("reset", "-q", "--soft", base);
   }
   if (git("diff", "--cached", "--quiet").status !== 0) {
     const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`, ...(body.length ? ["-m", `Also holds: ${body.join("; ")}`] : []));
     if (commit.status !== 0) return backupFailed(prior, "commit", commit);
   }
+  if (!git("rev-parse", "--verify", "-q", "HEAD").stdout.trim()) return;
+  const fetch = remoteGit("fetch", "-q", "origin");
+  if (fetch.status !== 0) return backupFailed(prior, "fetch", fetch);
+  const synced = git("rev-parse", "--verify", "-q", upstream).stdout.trim() && syncWithOrigin(upstream);
+  if (synced) return backupFailed(prior, "sync", synced);
   const head = git("rev-parse", "--verify", "-q", "HEAD").stdout.trim();
-  if (!head) return;
   const range = [head, "--not", "--remotes=origin"];
   const unpushed = git("rev-list", "--count", ...range);
   const pending = unpushed.status !== 0 || unpushed.stdout.trim() !== "0";
@@ -542,7 +567,7 @@ function save(message) {
     return;
   }
   if (pending) {
-    const push = spawnSync("git", ["-C", RETRO, "push", "-q", "origin", `${head}:refs/heads/${BACKUP_BRANCH}`], { encoding: "utf-8", timeout: PUSH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    const push = remoteGit("push", "-q", "origin", `${head}:refs/heads/${BACKUP_BRANCH}`);
     if (push.status !== 0) return backupFailed(state, "push", push);
   }
   if (state.failure) {
