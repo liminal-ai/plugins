@@ -50,7 +50,7 @@ const LOCK = join(RETRO, ".lock");
 const GIT_DIR = join(RETRO, ".git");
 const BACKUP_STATE = join(GIT_DIR, "retro-backup.json");
 const GITLEAKS_REPORT = join(GIT_DIR, "retro-gitleaks.json");
-const PUSH_TIMEOUT_MS = 15000;
+const REMOTE_TIMEOUT_MS = 15000;
 const BACKUP_BRANCH = "main";
 // The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
 const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
@@ -438,8 +438,10 @@ function refreshRegistry(backup = backupState()) {
 }
 
 function git(...args) {
-  return spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", maxBuffer: 1 << 30, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  return spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", maxBuffer: 1 << 30, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true" } });
 }
+
+const remoteGit = (...args) => spawnSync("git", ["-C", RETRO, ...args], { encoding: "utf-8", timeout: REMOTE_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
 
 function backupState() {
   try {
@@ -505,9 +507,55 @@ function backupFailed(state, step, r) {
   console.error(`retro: backup ${step} failed (${error}); nothing new is pushed, and the next retro command that writes tries again`);
 }
 
+const later = (a, b) => (!a || (b && new Date(b) > new Date(a)) ? b : a);
+
+// Each side of a rebase conflict as git stages it, or null when that side deleted the file or it is not JSON.
+function conflictSide(stage, file) {
+  const r = git("show", `:${stage}:${file}`);
+  try {
+    return r.status === 0 ? JSON.parse(r.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Files the sync settles itself; any other conflicted file needs the operator.
+const SETTLERS = {
+  "reminder.json": (file) => {
+    const [a, b] = [conflictSide(2, file), conflictSide(3, file)];
+    if (!a || !b) return false;
+    const asked = later(a.lastAskedAt, b.lastAskedAt);
+    writeJson(join(RETRO, file), {
+      ...a,
+      ...b,
+      lastAskedAt: asked,
+      reason: asked === b.lastAskedAt ? b.reason : a.reason,
+      lastAnsweredAt: later(a.lastAnsweredAt, b.lastAnsweredAt),
+    });
+    return git("add", file).status === 0;
+  },
+  "REGISTRY.md": (file) => {
+    refreshRegistry({ secrets: [], failure: null });
+    return git("add", file).status === 0;
+  },
+};
+
+function rebaseOntoOtherMachines(upstream) {
+  if (git("merge-base", "--is-ancestor", upstream, "HEAD").status === 0) return null;
+  for (let step = git("rebase", "-q", upstream); step.status !== 0; step = git("rebase", "--continue")) {
+    const conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.split("\n").filter(Boolean);
+    const unsettled = conflicts.filter((f) => !SETTLERS[f]);
+    if (!unsettled.length) unsettled.push(...conflicts.filter((f) => !SETTLERS[f](f)));
+    if (!conflicts.length || unsettled.length) {
+      git("rebase", "--abort");
+      if (!conflicts.length) return step;
+      return { stderr: `${unsettled.map((f) => join(RETRO, f)).join(", ")} changed both here and on another machine. This machine's versions stay on disk; ask the operator to settle each file so it holds what both machines should keep` };
+    }
+  }
+  return null;
+}
+
 // Every write ends here. A backup failure never fails the command: the work stays on disk and the next write retries.
-// It commits first, scans the commits the push would send, then pushes that commit by SHA,
-// so a file written meanwhile waits for the next write's commit and scan.
 function save(message) {
   if (!existsSync(GIT_DIR)) {
     refreshRegistry();
@@ -516,20 +564,25 @@ function save(message) {
   const prior = backupState();
   refreshRegistry({ secrets: [], failure: null });
   stageAll();
-  // A commit held back for a secret would ride along in every later push, so fold the unpushed commits into this one.
-  const pushedHead = git("rev-parse", "--verify", "-q", `refs/remotes/origin/${BACKUP_BRANCH}`).stdout.trim();
+  const upstream = `refs/remotes/origin/${BACKUP_BRANCH}`;
+  const base = git("merge-base", "HEAD", upstream).stdout.trim();
+  const heldBackCommitsWouldRecur = prior.secrets.length || prior.failure?.step === "sync";
   let body = [];
-  if (prior.secrets.length && pushedHead) {
+  if (heldBackCommitsWouldRecur && base) {
     body = git("log", "--format=%s", "HEAD", "--not", "--remotes=origin").stdout.trim().split("\n").filter(Boolean);
-    git("reset", "-q", "--soft", pushedHead);
+    git("reset", "-q", "--soft", base);
   }
   if (git("diff", "--cached", "--quiet").status !== 0) {
     const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`, ...(body.length ? ["-m", `Also holds: ${body.join("; ")}`] : []));
     if (commit.status !== 0) return backupFailed(prior, "commit", commit);
   }
-  const head = git("rev-parse", "--verify", "-q", "HEAD").stdout.trim();
-  if (!head) return;
-  const range = [head, "--not", "--remotes=origin"];
+  if (!git("rev-parse", "--verify", "-q", "HEAD").stdout.trim()) return;
+  const fetch = remoteGit("fetch", "-q", "origin");
+  if (fetch.status !== 0) return backupFailed(prior, "fetch", fetch);
+  const synced = git("rev-parse", "--verify", "-q", upstream).stdout.trim() && rebaseOntoOtherMachines(upstream);
+  if (synced) return backupFailed(prior, "sync", synced);
+  const scanned = git("rev-parse", "--verify", "-q", "HEAD").stdout.trim();
+  const range = [scanned, "--not", "--remotes=origin"];
   const unpushed = git("rev-list", "--count", ...range);
   const pending = unpushed.status !== 0 || unpushed.stdout.trim() !== "0";
   const scanner = pending ? findGitleaks() : {};
@@ -542,7 +595,7 @@ function save(message) {
     return;
   }
   if (pending) {
-    const push = spawnSync("git", ["-C", RETRO, "push", "-q", "origin", `${head}:refs/heads/${BACKUP_BRANCH}`], { encoding: "utf-8", timeout: PUSH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    const push = remoteGit("push", "-q", "origin", `${scanned}:refs/heads/${BACKUP_BRANCH}`);
     if (push.status !== 0) return backupFailed(state, "push", push);
   }
   if (state.failure) {
