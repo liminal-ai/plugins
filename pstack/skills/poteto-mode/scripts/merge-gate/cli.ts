@@ -18,18 +18,23 @@ import { audit } from "./audit.ts";
 import type { Repository } from "../watch-pr/types.ts";
 import { parsePrNumber } from "../watch-pr/types.ts";
 import {
+  type Acceptances,
+  type Accepted,
   BOX_FORMS,
   BOX_ID,
   type CheckWaiver,
+  type Deferral,
   type Facts,
   type PlanRef,
   type PrRef,
-  type Waiver,
+  SHORTCUT_FORM,
+  SHORTCUT_ID,
   evaluate,
+  isDeferOwner,
   missingNames,
   renderEvaluations,
   short,
-  strayWaivers,
+  strayAcceptances,
   WAIVABLE_CHECKS,
 } from "./gate.ts";
 import { Git, ReadError } from "./git.ts";
@@ -61,8 +66,7 @@ interface Options {
   readonly check: boolean;
   readonly method: MergeMethod;
   readonly plan: PlanRef | null;
-  readonly waivers: readonly Waiver[];
-  readonly checkWaivers: readonly CheckWaiver[];
+  readonly accepted: Acceptances;
 }
 
 interface RunRecord {
@@ -78,8 +82,7 @@ interface RunRecord {
     | "merged-elsewhere"
     | "error";
   readonly missing: readonly string[];
-  /** Each waiver as the log's waived column lists it. */
-  readonly waived: readonly string[];
+  readonly accepted: readonly string[];
 }
 
 const LOG_HEADER = "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived\n";
@@ -99,17 +102,60 @@ function parsePr(value: string): PrRef["number"] {
   }
 }
 
-function collectWaiver(value: string, previous: readonly Waiver[]): Waiver[] {
+function idValue(
+  value: string,
+  previous: readonly { readonly id: string }[],
+  what: string,
+  idForm: RegExp,
+  usage: string
+): { readonly id: string; readonly value: string } {
   const at = value.indexOf("=");
   const id = at === -1 ? value : value.slice(0, at);
-  const reason = at === -1 ? "" : value.slice(at + 1).trim();
-  if (!BOX_ID.test(id))
-    throw new InvalidArgumentError(`"${id}" is not a box id such as perf or live-3`);
-  if (reason === "")
-    throw new InvalidArgumentError(`box ${id} needs a reason: --accept-skip ${id}=<reason>`);
-  if (previous.some((waiver) => waiver.id === id))
-    throw new InvalidArgumentError(`box ${id} is waived more than once`);
+  const rest = at === -1 ? "" : value.slice(at + 1).trim();
+  if (!idForm.test(id))
+    throw new InvalidArgumentError(`"${id}" is not a ${what} id such as perf or live-3`);
+  if (rest === "")
+    throw new InvalidArgumentError(`${what} ${id} needs ${usage.replace("<id>", id)}`);
+  if (previous.some((entry) => entry.id === id))
+    throw new InvalidArgumentError(`${what} ${id} is given more than once`);
+  return { id, value: rest };
+}
+
+function collectSkip(value: string, previous: readonly Accepted[]): Accepted[] {
+  const { id, value: reason } = idValue(
+    value,
+    previous,
+    "box",
+    BOX_ID,
+    "a reason: --accept-skip <id>=<reason>"
+  );
   return [...previous, { id, reason }];
+}
+
+function collectShortcut(value: string, previous: readonly Accepted[]): Accepted[] {
+  const { id, value: reason } = idValue(
+    value,
+    previous,
+    "shortcut",
+    SHORTCUT_ID,
+    "a reason: --accept-shortcut <id>=<reason>"
+  );
+  return [...previous, { id, reason }];
+}
+
+function collectDeferral(value: string, previous: readonly Deferral[]): Deferral[] {
+  const { id, value: owner } = idValue(
+    value,
+    previous,
+    "box",
+    BOX_ID,
+    "an owner: --defer <id>=<owner>"
+  );
+  if (!isDeferOwner(owner))
+    throw new InvalidArgumentError(
+      `box ${id}'s owner "${owner}" is neither a Linear id such as LH-215 nor an open workflow step as <thread id>/w<n>.<n>. Owed work needs an owner that will pick it up`
+    );
+  return [...previous, { id, owner }];
 }
 
 function collectCheckWaiver(
@@ -130,10 +176,29 @@ function collectCheckWaiver(
   return [...previous, { check, reason }];
 }
 
-const waivedCells = (options: Options): string[] => [
-  ...options.waivers.map((waiver) => `${waiver.id}: ${waiver.reason}`),
-  ...options.checkWaivers.map((waiver) => `check ${waiver.check}: ${waiver.reason}`),
+export type AcceptedKind = "skip" | "defer" | "shortcut" | "waiver";
+
+const acceptedCells = ({ skips, deferrals, shortcuts, checks }: Acceptances): string[] => [
+  ...skips.map(({ id, reason }) => `skip ${id}: ${reason}`),
+  ...deferrals.map(({ id, owner }) => `defer ${id}: ${owner}`),
+  ...shortcuts.map(({ id, reason }) => `shortcut ${id}: ${reason}`),
+  ...checks.map(({ check, reason }) => `check ${check}: ${reason}`),
 ];
+
+export function readWaivedCell(
+  cell: string
+): { readonly kind: AcceptedKind; readonly id: string; readonly reason: string }[] {
+  if (cell.trim() === "") return [];
+  return cell
+    .split(/; (?=(?:(?:check|defer|shortcut|skip) \S+|[a-z]+(?:-\d+)?): )/)
+    .map((entry) => {
+      const match = /^(?:(check|defer|shortcut|skip) )?([^:\s]+): ([\s\S]*)$/.exec(entry);
+      if (match === null) return { kind: "skip" as const, id: "", reason: entry };
+      const kind: AcceptedKind =
+        match[1] === "check" ? "waiver" : ((match[1] ?? "skip") as AcceptedKind);
+      return { kind, id: match[2], reason: match[3] };
+    });
+}
 
 function parseArgs(argv: readonly string[], runtime: Runtime): Options {
   const program = new Command("merge-gate")
@@ -161,8 +226,20 @@ function parseArgs(argv: readonly string[], runtime: Runtime): Options {
     .option("--plan-pr <id>", "the PR id that ends the section's title, such as GC2")
     .option(
       "--accept-skip <id=reason>",
-      "the lead accepts the verdict's skipped box <id>, for <reason>; repeatable, posted on the PR before the merge",
-      collectWaiver,
+      "the lead accepts the verdict's skipped box <id> as not applying, for <reason>; repeatable, posted on the PR before the merge",
+      collectSkip,
+      []
+    )
+    .option(
+      "--defer <id=owner>",
+      "the lead defers the verdict's skipped box <id>, whose work is owed, to <owner>: a Linear id such as LH-215 or an open workflow step <thread id>/w<n>.<n>; repeatable, posted on the PR before the merge",
+      collectDeferral,
+      []
+    )
+    .option(
+      "--accept-shortcut <id=reason>",
+      "the lead accepts the shortcut <id> the verdict lists, for <reason>; repeatable, posted on the PR before the merge",
+      collectShortcut,
       []
     )
     .option(
@@ -178,6 +255,7 @@ Run "merge-gate audit --help" for the audit of merges against gate receipts.
 
 The verdict lists each plan box under its pstack-verdict line as ${BOX_FORMS}.
 A changed box counts only when it names who accepted the changed bar and why, separated by the first comma.
+A re-verification that did not rerun something lists each shortcut as ${SHORTCUT_FORM}.
 `
   );
   program.parse(argv, { from: "user" });
@@ -188,11 +266,18 @@ A changed box counts only when it names who accepted the changed bar and why, se
     method: MergeMethod;
     plan?: string;
     planPr?: string;
-    acceptSkip: Waiver[];
+    acceptSkip: Accepted[];
+    defer: Deferral[];
+    acceptShortcut: Accepted[];
     waive: CheckWaiver[];
   }>();
   if ((raw.plan === undefined) !== (raw.planPr === undefined))
     program.error("error: --plan and --plan-pr go together");
+  const both = raw.acceptSkip.find(({ id }) => raw.defer.some((d) => d.id === id));
+  if (both !== undefined)
+    program.error(
+      `error: box ${both.id} is both accepted and deferred. Accept a box that does not apply; defer one whose work is owed`
+    );
   return {
     pr: raw.pr,
     repo: raw.repo ?? null,
@@ -202,8 +287,12 @@ A changed box counts only when it names who accepted the changed bar and why, se
       raw.plan === undefined || raw.planPr === undefined
         ? null
         : { path: raw.plan, pr: raw.planPr },
-    waivers: raw.acceptSkip,
-    checkWaivers: raw.waive,
+    accepted: {
+      skips: raw.acceptSkip,
+      deferrals: raw.defer,
+      shortcuts: raw.acceptShortcut,
+      checks: raw.waive,
+    },
   };
 }
 
@@ -230,7 +319,7 @@ function appendRun(runtime: Runtime, run: RunRecord): void {
     run.mode,
     run.outcome,
     run.missing.join("; "),
-    run.waived.join("; "),
+    run.accepted.join("; "),
   ];
   appendFileSync(file, `${row.map(cell).join("\t")}\n`);
 }
@@ -256,7 +345,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     pr: String(options.pr),
     head: "",
     mode,
-    waived: waivedCells(options),
+    accepted: acceptedCells(options.accepted),
   };
   const readFailed = (error: unknown, run = base): Decision => {
     const detail = message(error);
@@ -271,8 +360,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   const asked = {
     plan: options.plan,
     cwd: runtime.cwd,
-    waivers: options.waivers,
-    checkWaivers: options.checkWaivers,
+    accepted: options.accepted,
   };
   try {
     const repo = options.repo ?? cwd.originRepo();
@@ -289,11 +377,11 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
   const head = facts.pull.headRefOid;
   const run = { ...base, head };
   const at = `${label} at ${short(head)}`;
-  const stray = strayWaivers(facts);
+  const stray = strayAcceptances(facts);
   if (stray.length > 0)
     return {
       exit: EXIT.error,
-      text: `ERROR: ${at}\nA waiver names a box the verdict did not skip or a check that holds, so nothing was merged. Waive only the boxes the verdict lists as skipped and the checks the gate finds missing.\n${stray.map((line) => `  ${line}`).join("\n")}\n`,
+      text: `ERROR: ${at}\nAn acceptance names a box the verdict did not skip, a shortcut it does not list, or a check that holds, so nothing was merged. Accept or defer only the boxes the verdict lists as skipped, accept only the shortcuts it lists, and waive only the checks the gate finds missing.\n${stray.map((line) => `  ${line}`).join("\n")}\n`,
       run: { ...run, outcome: "error", missing: stray.map((line) => `usage: ${line}`) },
     };
   const evaluations = evaluate(facts);
@@ -338,20 +426,17 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
       ),
       run: { ...run, outcome: "refused", missing: missingNames(lapsed) },
     };
-  const freshStray = strayWaivers(fresh);
+  const freshStray = strayAcceptances(fresh);
   if (freshStray.length > 0)
     return notMerged(
       `Since the gate checked the PR, something the run waives came to hold (${freshStray.join("; ")}). Nothing was merged. Run the gate again.`
     );
   if (
-    (options.waivers.length > 0 || options.checkWaivers.length > 0) &&
+    Object.values(options.accepted).some((given) => given.length > 0) &&
     fresh.verdict.kind === "found"
   ) {
     const posted = await runtime.github
-      .comment(
-        pr,
-        waiverComment(fresh.verdict.url, head, options.waivers, options.checkWaivers)
-      )
+      .comment(pr, acceptanceComment(fresh.verdict, head, options.accepted))
       .catch((error: unknown): WriteAttempt => ({
         ok: false,
         detail: message(error),
@@ -428,25 +513,34 @@ async function mergeBrief(github: GitHub, repo: Repository): Promise<string> {
   }
 }
 
-function waiverComment(
-  verdictUrl: string,
+function acceptanceComment(
+  verdict: Extract<Facts["verdict"], { kind: "found" }>,
   head: string,
-  waivers: readonly Waiver[],
-  checkWaivers: readonly CheckWaiver[]
+  { skips, deferrals, shortcuts, checks }: Acceptances
 ): string {
   const sections: string[][] = [];
-  if (waivers.length > 0)
-    sections.push([
-      `merge-gate: the lead waived these skipped boxes of the verdict ${verdictUrl} to merge ${head}.`,
-      "",
-      ...waivers.map((waiver) => `- ${waiver.id}: ${waiver.reason}`),
-    ]);
-  if (checkWaivers.length > 0)
-    sections.push([
-      `merge-gate: the lead waived these missing gate checks to merge ${head}.`,
-      "",
-      ...checkWaivers.map((waiver) => `- ${waiver.check}: ${waiver.reason}`),
-    ]);
+  const section = (title: string, lines: readonly string[]): void => {
+    if (lines.length > 0) sections.push([title, "", ...lines]);
+  };
+  section(
+    `merge-gate: the lead waived these skipped boxes of the verdict ${verdict.url} to merge ${head}.`,
+    skips.map(({ id, reason }) => `- ${id}: ${reason}`)
+  );
+  section(
+    `merge-gate: the lead deferred these skipped boxes of the verdict ${verdict.url} to their owners to merge ${head}.`,
+    deferrals.map(({ id, owner }) => {
+      const note = verdict.boxes.find((box) => box.id === id)?.note ?? "";
+      return `- ${id}: ${owner}${note === "" ? "" : `. Owed: ${note}`}`;
+    })
+  );
+  section(
+    `merge-gate: the lead accepted these shortcuts the verdict ${verdict.url} lists to merge ${head}.`,
+    shortcuts.map(({ id, reason }) => `- ${id}: ${reason}`)
+  );
+  section(
+    `merge-gate: the lead waived these missing gate checks to merge ${head}.`,
+    checks.map(({ check, reason }) => `- ${check}: ${reason}`)
+  );
   return sections.map((lines) => lines.join("\n")).join("\n\n");
 }
 
@@ -469,7 +563,7 @@ function usageRun(argv: readonly string[], error: CommanderError): RunRecord {
     mode: argv.includes("--check") ? "check" : "merge",
     outcome: "error",
     missing: [`usage: ${error.message.replace(/^error: /, "")}`],
-    waived: [],
+    accepted: [],
   };
 }
 

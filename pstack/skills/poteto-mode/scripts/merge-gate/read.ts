@@ -8,7 +8,7 @@ import {
   findVerdictLine,
   hasVerdictLine,
   isInstructionFile,
-  parseBoxLines,
+  parseVerdictBody,
   parseVerdictLine,
   speaksForRepo,
 } from "./gate.ts";
@@ -22,7 +22,7 @@ export async function readFacts(
   github: GitHub,
   git: Git,
   pr: PrRef,
-  asked: Pick<Facts, "waivers" | "checkWaivers"> & {
+  asked: Pick<Facts, "accepted"> & {
     /** The plan --plan and --plan-pr pass, and the directory a relative plan path resolves from. */
     readonly plan: PlanRef | null;
     readonly cwd: string;
@@ -61,7 +61,7 @@ export async function readFacts(
   };
   if (found !== null) {
     const parsed = parseVerdictLine(found.line);
-    const { boxes, unread } = parseBoxLines(found.below);
+    const body = parseVerdictBody(found.below);
     verdict =
       parsed === null
         ? { kind: "malformed", line: found.line, url: found.url }
@@ -70,8 +70,7 @@ export async function readFacts(
             ...parsed,
             url: found.url,
             recordedHash: recordedHash(git, remote, parsed.base, parsed.head),
-            boxes,
-            unreadBoxLines: unread,
+            ...body,
           };
   }
 
@@ -90,8 +89,7 @@ export async function readFacts(
     currentHash,
     verdict,
     plan,
-    waivers: asked.waivers,
-    checkWaivers: asked.checkWaivers,
+    accepted: asked.accepted,
     instructionFiles:
       instructionPaths.length === 0
         ? null
