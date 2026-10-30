@@ -76,16 +76,32 @@ export interface VerdictBox {
   readonly note: string;
 }
 
-/** A skipped box the lead accepts, given as `--accept-skip <id>=<reason>` on the run that merges. */
-export interface Waiver {
+export interface VerdictShortcut {
+  readonly id: string;
+  readonly note: string;
+}
+
+export interface Accepted {
   readonly id: string;
   readonly reason: string;
+}
+
+export interface Deferral {
+  readonly id: string;
+  readonly owner: string;
 }
 
 /** A missing gate check the lead accepts, given as `--waive <check>=<reason>` on the run that merges. */
 export interface CheckWaiver {
   readonly check: string;
   readonly reason: string;
+}
+
+export interface Acceptances {
+  readonly skips: readonly Accepted[];
+  readonly deferrals: readonly Deferral[];
+  readonly shortcuts: readonly Accepted[];
+  readonly checks: readonly CheckWaiver[];
 }
 
 /** A plan file and the PR id that ends its section's title, as --plan and --plan-pr or a PR body's pstack-plan line give them. */
@@ -129,6 +145,8 @@ export type VerdictFact =
       readonly recordedHash: HashResult;
       readonly boxes: readonly VerdictBox[];
       readonly unreadBoxLines: readonly string[];
+      readonly shortcuts: readonly VerdictShortcut[];
+      readonly unreadShortcutLines: readonly string[];
     };
 
 export interface InstructionFiles {
@@ -149,8 +167,7 @@ export interface Facts {
   readonly currentHash: HashResult;
   readonly verdict: VerdictFact;
   readonly plan: PlanFact;
-  readonly waivers: readonly Waiver[];
-  readonly checkWaivers: readonly CheckWaiver[];
+  readonly accepted: Acceptances;
   readonly instructionFiles: InstructionFiles | null;
 }
 
@@ -186,6 +203,15 @@ export const BOX_ID = /^[a-z]+(?:-\d+)?$/;
 const BOX_LINE =
   /^(?:[-*] )?box ([a-z]+(?:-\d+)?): (done|n\/a|skipped|changed)(?:\. (.*))?$/;
 const BOX_PREFIX = /^(?:[-*] )?box /;
+export const SHORTCUT_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SHORTCUT_LINE = /^(?:[-*] )?shortcut ([a-z0-9]+(?:-[a-z0-9]+)*): (\S.*)$/;
+const SHORTCUT_PREFIX = /^(?:[-*] )?shortcut\b/i;
+export const DEFER_OWNER_FORMS =
+  "a Linear id such as LH-215 or an open workflow step as <thread id>/w<n>.<n>";
+const LINEAR_ID = /^[A-Z][A-Z0-9]*-\d+$/;
+const WORKFLOW_STEP = /^\S+\/w\d+\.\d+$/;
+export const isDeferOwner = (owner: string): boolean =>
+  LINEAR_ID.test(owner) || WORKFLOW_STEP.test(owner);
 const PLAN_PREFIX = "pstack-plan:";
 const PLAN_DECLARATION = /^pstack-plan: (\S(?:.*\S)?) pr=(\S+)$/;
 const APPROVAL_PREFIX = "lee-approves-instruction-files:";
@@ -251,25 +277,33 @@ export function findVerdictLine(comments: readonly IssueComment[]): {
   return null;
 }
 
-/** The box lines under a verdict line, and any line that starts like one but does not parse. */
-export function parseBoxLines(below: readonly string[]): {
+export function parseVerdictBody(below: readonly string[]): {
   readonly boxes: readonly VerdictBox[];
-  readonly unread: readonly string[];
+  readonly unreadBoxLines: readonly string[];
+  readonly shortcuts: readonly VerdictShortcut[];
+  readonly unreadShortcutLines: readonly string[];
 } {
   const boxes: VerdictBox[] = [];
-  const unread: string[] = [];
+  const unreadBoxLines: string[] = [];
+  const shortcuts: VerdictShortcut[] = [];
+  const unreadShortcutLines: string[] = [];
   for (const line of below.map(readable)) {
-    if (!BOX_PREFIX.test(line)) continue;
-    const match = BOX_LINE.exec(line);
-    if (match === null) unread.push(line);
-    else
-      boxes.push({
-        id: match[1],
-        status: match[2] as BoxStatus,
-        note: match[3]?.trim() ?? "",
-      });
+    if (BOX_PREFIX.test(line)) {
+      const match = BOX_LINE.exec(line);
+      if (match === null) unreadBoxLines.push(line);
+      else
+        boxes.push({
+          id: match[1],
+          status: match[2] as BoxStatus,
+          note: match[3]?.trim() ?? "",
+        });
+    } else if (SHORTCUT_PREFIX.test(line)) {
+      const match = SHORTCUT_LINE.exec(line);
+      if (match === null) unreadShortcutLines.push(line);
+      else shortcuts.push({ id: match[1], note: match[2].trim() });
+    }
   }
-  return { boxes, unread };
+  return { boxes, unreadBoxLines, shortcuts, unreadShortcutLines };
 }
 
 /**
@@ -298,24 +332,32 @@ export function barChange(
   return at === -1 || who === "" || why === "" ? null : { who, why };
 }
 
-/** Each waiver for a box the verdict did not skip or a check that holds; the run that gave it is a usage error. */
-export function strayWaivers(facts: Facts): string[] {
-  const { verdict } = facts;
-  const boxes =
+export function strayAcceptances(facts: Facts): string[] {
+  const { verdict, accepted } = facts;
+  const notSkipped = (flag: string, ids: readonly string[]): string[] =>
     verdict.kind !== "found"
       ? []
-      : facts.waivers
+      : ids
           .filter(
-            (waiver) =>
+            (id) =>
               !verdict.boxes.some(
-                (box) => box.id === waiver.id && box.status === "skipped"
+                (box) => box.id === id && box.status === "skipped"
               )
           )
           .map(
-            (waiver) =>
-              `--accept-skip ${waiver.id}: the verdict (${verdict.url}) does not skip box ${waiver.id}`
+            (id) =>
+              `${flag} ${id}: the verdict (${verdict.url}) does not skip box ${id}`
           );
-  const checks = facts.checkWaivers.flatMap((waiver) => {
+  const shortcuts =
+    verdict.kind !== "found"
+      ? []
+      : accepted.shortcuts
+          .filter(({ id }) => !verdict.shortcuts.some((s) => s.id === id))
+          .map(
+            ({ id }) =>
+              `--accept-shortcut ${id}: the verdict (${verdict.url}) lists no shortcut ${id}`
+          );
+  const checks = accepted.checks.flatMap((waiver) => {
     const requirement = REQUIREMENTS.find((r) => r.waiver === waiver.check);
     return requirement === undefined || !requirement.evaluate(facts).met
       ? []
@@ -323,7 +365,12 @@ export function strayWaivers(facts: Facts): string[] {
           `--waive ${waiver.check}: ${requirement.name} is met, so there is nothing to waive`,
         ];
   });
-  return [...boxes, ...checks];
+  return [
+    ...notSkipped("--accept-skip", accepted.skips.map(({ id }) => id)),
+    ...notSkipped("--defer", accepted.deferrals.map(({ id }) => id)),
+    ...shortcuts,
+    ...checks,
+  ];
 }
 
 export function parseVerdictLine(line: string): {
@@ -480,7 +527,7 @@ const verdict: Requirement = {
       );
     if (fact.outcome === "FAIL")
       return unmet(
-        `The latest verdict is FAIL (${fact.url}). Fix what it found and get a new verdict.`
+        `The latest verdict is FAIL (${fact.url}). Fix what it found and get a new verdict. The lead's ruling on a finding never turns a FAIL into a pass; the verifier's next verdict weighs it.`
       );
     const reason = !fact.recordedHash.ok
       ? `the verdict's change could not be hashed (${fact.recordedHash.detail})`
@@ -502,7 +549,7 @@ export const BOX_FORMS =
 
 const planBoxes: Requirement = {
   name: "Plan boxes",
-  evaluate({ verdict: fact, plan: planFact, waivers }) {
+  evaluate({ verdict: fact, plan: planFact, accepted }) {
     if (planFact.kind === "declared-missing") {
       const { path, pr } = planFact.declared;
       return unmet(
@@ -538,9 +585,12 @@ const planBoxes: Requirement = {
     const changed = fact.boxes.filter((box) => box.status === "changed");
     const unowned = changed.filter((box) => barChange(box.note) === null);
     // Every agent posts as the same GitHub account, so no comment can say the lead accepted a skip; only the lead's own gate run can.
-    const waived = new Set(waivers.map((waiver) => waiver.id));
+    const settled = new Set([
+      ...accepted.skips.map(({ id }) => id),
+      ...accepted.deferrals.map(({ id }) => id),
+    ]);
     const unwaived = fact.boxes.filter(
-      (box) => box.status === "skipped" && !waived.has(box.id)
+      (box) => box.status === "skipped" && !settled.has(box.id)
     );
     const parts: string[] = [];
     const details: string[] = [];
@@ -576,13 +626,21 @@ const planBoxes: Requirement = {
     }
     if (unwaived.length > 0) {
       parts.push(
-        `${unwaived.length} skipped box${unwaived.length === 1 ? " is" : "es are"} not waived by the lead, so the verdict is not a pass. Run the box and get a new verdict, or, if the lead accepts the skip, the lead runs the gate with "--accept-skip <id>=<reason>"`
+        `${unwaived.length} skipped box${unwaived.length === 1 ? " is" : "es are"} not accepted or deferred by the lead, so the verdict is not a pass. Run the box and get a new verdict. Or the lead runs the gate with "--accept-skip <id>=<reason>" for a box that does not apply, or "--defer <id>=<owner>" for a box whose work is owed`
       );
-      details.push(`not waived: ${unwaived.map((box) => box.id).join(" ")}`);
+      details.push(`not accepted: ${unwaived.map((box) => box.id).join(" ")}`);
     }
     if (parts.length > 0)
       return unmet(`${parts.join(". ")}. (${fact.url})`, details);
-    const skipped = fact.boxes.filter((box) => box.status === "skipped").length;
+    const deferred = fact.boxes.flatMap((box) => {
+      const deferral = accepted.deferrals.find(({ id }) => id === box.id);
+      return box.status === "skipped" && deferral !== undefined
+        ? [{ box, owner: deferral.owner }]
+        : [];
+    });
+    const skipped =
+      fact.boxes.filter((box) => box.status === "skipped").length -
+      deferred.length;
     const scope =
       plan === null
         ? `no plan given, ${fact.boxes.length} box${fact.boxes.length === 1 ? "" : "es"} listed`
@@ -591,7 +649,10 @@ const planBoxes: Requirement = {
       scope,
       ...(skipped === 0
         ? []
-        : [`${skipped} skip${skipped === 1 ? "" : "s"} waived by the lead`]),
+        : [`${skipped} skip${skipped === 1 ? "" : "s"} accepted by the lead`]),
+      ...(deferred.length === 0
+        ? []
+        : [`${deferred.length} box${deferred.length === 1 ? "" : "es"} deferred`]),
       ...(changed.length === 0
         ? []
         : [`${changed.length} bar${changed.length === 1 ? "" : "s"} changed`]),
@@ -602,10 +663,62 @@ const planBoxes: Requirement = {
         ? []
         : [`changed: box ${box.id}, accepted by ${change.who}: ${change.why}`];
     });
-    const notesBelow = [...noPlan, ...changes];
+    const owed = deferred.map(
+      ({ box, owner }) => `deferred: box ${box.id} to ${owner}: ${box.note}`
+    );
+    const notesBelow = [...noPlan, ...changes, ...owed];
     return met(
       notes.join(", "),
       notesBelow.length === 0 ? undefined : notesBelow
+    );
+  },
+};
+
+export const SHORTCUT_FORM =
+  '"shortcut <id>: <what was not rerun, and the verdict it carries>. <why nothing that changed reaches it>", with <id> the box id such as live-1, or a lowercase slug with hyphens';
+
+const shortcuts: Requirement = {
+  name: "Shortcuts",
+  evaluate({ verdict: fact, accepted }) {
+    if (fact.kind !== "found") return met("no verdict to read; see Independent verdict");
+    if (fact.shortcuts.length === 0 && fact.unreadShortcutLines.length === 0)
+      return met("none listed");
+    const ids = fact.shortcuts.map(({ id }) => id);
+    const repeated = [...new Set(ids)].filter(
+      (id) => ids.indexOf(id) !== ids.lastIndexOf(id)
+    );
+    const reasons = new Map(accepted.shortcuts.map((a) => [a.id, a.reason]));
+    const unaccepted = [...new Set(ids)].filter((id) => !reasons.has(id));
+    const parts: string[] = [];
+    const details: string[] = [];
+    if (fact.unreadShortcutLines.length > 0) {
+      parts.push(
+        `${fact.unreadShortcutLines.length} shortcut line${fact.unreadShortcutLines.length === 1 ? " does" : "s do"} not read as ${SHORTCUT_FORM}`
+      );
+      details.push(...fact.unreadShortcutLines.map((line) => `unread: ${line}`));
+    }
+    if (repeated.length > 0) {
+      parts.push(
+        `${repeated.length} shortcut${repeated.length === 1 ? " is" : "s are"} listed more than once. Have the verifier list each once`
+      );
+      details.push(`listed more than once: ${repeated.join(" ")}`);
+    }
+    if (unaccepted.length > 0) {
+      parts.push(
+        `${unaccepted.length} shortcut${unaccepted.length === 1 ? " is" : "s are"} not accepted by the lead. Rerun what it skipped and get a new verdict, or, if the lead accepts it, the lead runs the gate with "--accept-shortcut <id>=<reason>"`
+      );
+      details.push(
+        ...fact.shortcuts
+          .filter(({ id }) => unaccepted.includes(id))
+          .map(({ id, note }) => `not accepted: shortcut ${id}: ${note}`)
+      );
+    }
+    if (parts.length > 0) return unmet(`${parts.join(". ")}. (${fact.url})`, details);
+    return met(
+      `${fact.shortcuts.length} accepted by the lead`,
+      fact.shortcuts.map(
+        ({ id, note }) => `shortcut ${id}: ${note} Accepted: ${reasons.get(id)}`
+      )
     );
   },
 };
@@ -682,6 +795,7 @@ export const REQUIREMENTS: readonly Requirement[] = [
   reviewDecision,
   verdict,
   planBoxes,
+  shortcuts,
   codexReview,
   instructionApproval,
 ];
@@ -694,7 +808,7 @@ export const WAIVABLE_CHECKS: readonly string[] = REQUIREMENTS.flatMap(
 export const evaluate = (facts: Facts): readonly Evaluation[] =>
   REQUIREMENTS.map(({ name, waiver, evaluate: judge }) => {
     const result = judge(facts);
-    const waived = facts.checkWaivers.find((entry) => entry.check === waiver);
+    const waived = facts.accepted.checks.find((entry) => entry.check === waiver);
     return {
       name,
       waiver,

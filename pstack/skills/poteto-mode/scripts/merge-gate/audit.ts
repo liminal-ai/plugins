@@ -2,7 +2,15 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import type { Repository } from "../watch-pr/types.ts";
-import { EXIT, type Runtime, message, parseRepo, runLog } from "./cli.ts";
+import {
+  EXIT,
+  type Runtime,
+  message,
+  parseRepo,
+  readWaivedCell,
+  runLog,
+} from "./cli.ts";
+import { short } from "./gate.ts";
 import { ReadError } from "./git.ts";
 import type { MergedPull } from "./github.ts";
 
@@ -197,6 +205,38 @@ function table(rows: readonly (readonly string[])[]): string[] {
   );
 }
 
+function acceptedOnMerges(
+  rows: readonly Record<string, string>[],
+  repos: ReadonlySet<string>,
+  since: string
+): string[] {
+  const seen = new Set<string>();
+  const entries = rows.flatMap((row) => {
+    const key = receiptKey(row.repo, row.pr, row.head);
+    if (
+      row.outcome !== "merged" ||
+      (row.ts ?? "").slice(0, 10) < since ||
+      !repos.has(row.repo.toLowerCase()) ||
+      seen.has(key)
+    )
+      return [];
+    seen.add(key);
+    return readWaivedCell(row.waived ?? "").map(({ kind, id, reason }) => [
+      row.repo,
+      `#${row.pr}`,
+      short(row.head),
+      kind,
+      id,
+      reason,
+    ]);
+  });
+  if (entries.length === 0) return [];
+  return [
+    `What the lead accepted on gated merges since ${since}:`,
+    ...table([["repo", "PR", "head", "kind", "id", "reason or owner"], ...entries]),
+  ];
+}
+
 export async function audit(
   argv: readonly string[],
   runtime: Runtime
@@ -221,6 +261,7 @@ export async function audit(
       readonly note: string;
     })[];
   }[] = [];
+  let accepted: string[] = [];
   try {
     const local = readLog(runLog(runtime.store), true);
     const rows = [
@@ -260,6 +301,11 @@ export async function audit(
       since = held.date;
       heldBy = held.key;
     }
+    accepted = acceptedOnMerges(
+      rows,
+      new Set(names.map((name) => name.toLowerCase())),
+      since
+    );
     for (const [i, repo] of repos.entries()) {
       const name = names[i];
       const merges = await runtime.github.mergedPullRequests(repo, since);
@@ -377,6 +423,7 @@ export async function audit(
           : ` (${count("new")} new, ${count("known")} known, ${count("historical")} historical)`)
     );
   }
+  if (accepted.length > 0) out.push("", ...accepted);
 
   const stamp = runtime.now().toISOString();
   const name = `${stamp.slice(0, 10)}-${stamp.slice(11, 13)}${stamp.slice(14, 16)}${stamp.slice(17, 19)}`;

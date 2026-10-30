@@ -69,6 +69,41 @@ describe("merge-gate audit", () => {
     expect(result.calls).toEqual(["mergedPullRequests owner/repo 2026-10-10"]);
   });
 
+  it("lists each skip, deferral, shortcut and waiver the lead accepted on a gated merge, from JSON rows and older joined rows", async () => {
+    const waived = (pr: number, head: string, cell: string) =>
+      ["2026-10-16T00:00:00.000Z", "owner/repo", String(pr), head, "merge", "merged", "", cell].join("\t");
+    const result = await runAudit(
+      [
+        waived(1, A, "live-1: runs on staging right after this merge; the root records the result; perf: medians overlap; check codex: bot stuck"),
+        waived(
+          2,
+          B,
+          JSON.stringify([
+            { kind: "skip", id: "unit-1", reason: "live probe is unrelated; perf: unchanged from the previous verdict" },
+            { kind: "defer", id: "live-3", reason: "LH-215" },
+            { kind: "shortcut", id: "live-1", reason: "carried from 9f7e294; only docs changed" },
+          ])
+        ),
+        row("owner/repo", 3, C),
+      ],
+      { "owner/repo": [pull(1, A), pull(2, B), pull(3, C)] }
+    );
+    expect(result.exit).toBe(0);
+    expect(result.out).toContain(
+      [
+        "What the lead accepted on gated merges since 2026-10-10:",
+        "repo        PR  head     kind      id      reason or owner",
+        "owner/repo  #1  aaaaaaa  skip      live-1  runs on staging right after this merge; the root records the result",
+        "owner/repo  #1  aaaaaaa  skip      perf    medians overlap",
+        "owner/repo  #1  aaaaaaa  waiver    codex   bot stuck",
+        "owner/repo  #2  bbbbbbb  skip      unit-1  live probe is unrelated; perf: unchanged from the previous verdict",
+        "owner/repo  #2  bbbbbbb  defer     live-3  LH-215",
+        "owner/repo  #2  bbbbbbb  shortcut  live-1  carried from 9f7e294; only docs changed",
+        "Wrote ",
+      ].join("\n")
+    );
+  });
+
   it("takes receipts from another machine's --log and exits 0 when every merge has one", async () => {
     const other = join(mkdtempSync(join(tmpdir(), "merge-gate-dgx-")), "runs.tsv");
     writeFileSync(other, `${HEADER}\n${row("Owner/Repo", 2, B)}\n`);

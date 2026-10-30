@@ -332,6 +332,22 @@ describe("merge-gate", () => {
       expect(verdictLine(result.out)).toContain("The latest verdict is FAIL");
     });
 
+    it("refuses a FAIL that the lead's ruling after it calls a trunk defect", async () => {
+      const result = await gate({
+        comments: [
+          verdictComment("FAIL", repos.head, repos.main),
+          comment(
+            `pstack-ruling: head=${repos.head} by=claudeAgent/claude-opus-5-5\nThe one finding is a trunk defect, so it does not gate this PR.`
+          ),
+          codexComment(repos.head),
+        ],
+      });
+      expect(result.exit).toBe(1);
+      expect(verdictLine(result.out)).toContain(
+        "The lead's ruling on a finding never turns a FAIL into a pass"
+      );
+    });
+
     it("uses the most recent verdict: a newer FAIL beats an older PASS", async () => {
       const result = await gate({
         comments: [
@@ -527,7 +543,7 @@ describe("merge-gate", () => {
     it("refuses a skip the lead has not waived on the gate run", async () => {
       const result = await planGate([verdictWith(perfSkipped())]);
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("  not waived: perf");
+      expect(result.out).toContain("  not accepted: perf");
       expect(result.out).toContain('"--accept-skip <id>=<reason>"');
     });
 
@@ -540,7 +556,7 @@ describe("merge-gate", () => {
       );
       const result = await planGate([older, verdictWith(perfSkipped())]);
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("  not waived: perf");
+      expect(result.out).toContain("  not accepted: perf");
       expect(result.out).not.toContain("WOULD MERGE");
     });
 
@@ -555,7 +571,7 @@ describe("merge-gate", () => {
       ])) {
         const result = await planGate(comments);
         expect(result.exit).toBe(1);
-        expect(result.out).toContain("  not waived: perf");
+        expect(result.out).toContain("  not accepted: perf");
       }
     });
 
@@ -566,11 +582,11 @@ describe("merge-gate", () => {
       );
       expect(result.exit).toBe(0);
       expect(result.out).toContain(
-        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 skip waived by the lead)"
+        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 skip accepted by the lead)"
       );
       expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
       expect(result.log().split("\n")[1]).toEndWith(
-        "\tcheck\twould-merge\t\tperf: GC4 measures the same path against trunk."
+        '\tcheck\twould-merge\t\t[{"kind":"skip","id":"perf","reason":"GC4 measures the same path against trunk."}]'
       );
     });
 
@@ -590,7 +606,7 @@ describe("merge-gate", () => {
       );
       expect(result.calls.filter((call) => call.startsWith("comment "))).toHaveLength(1);
       expect(result.log().split("\n")[1]).toEndWith(
-        "\tmerge\tmerged\t\tperf: GC4 measures the same path against trunk."
+        '\tmerge\tmerged\t\t[{"kind":"skip","id":"perf","reason":"GC4 measures the same path against trunk."}]'
       );
     });
 
@@ -629,7 +645,7 @@ describe("merge-gate", () => {
         [["perf=   "], "box perf needs a reason"],
         [["perf"], "box perf needs a reason"],
         [["Perf=reason"], '"Perf" is not a box id'],
-        [["perf=one", "perf=two"], "box perf is waived more than once"],
+        [["perf=one", "perf=two"], "box perf is given more than once"],
       ] as const) {
         const result = await planGate(
           [verdictWith(perfSkipped())],
@@ -639,6 +655,56 @@ describe("merge-gate", () => {
         expect(result.out).toContain(text);
         expect(merged(result.calls)).toBe(false);
       }
+    });
+
+    const defer = (...values: string[]) =>
+      values.flatMap((value) => ["--defer", value]);
+
+    it("would merge a box the lead defers to its owner, posting and logging the owner and what is owed", async () => {
+      const verdict = verdictWith(perfSkipped());
+      const check = await planGate([verdict], [...planFlags, ...defer("perf=LH-215")]);
+      expect(check.exit).toBe(0);
+      expect(check.out).toContain(
+        "met: Plan boxes (all 16 required boxes of GC2 listed, 1 box deferred)\n  deferred: box perf to LH-215: Trunk lacks the feature, so no comparison ran.\n"
+      );
+      const result = await planGate(
+        [verdict],
+        ["--plan", plan, "--plan-pr", "GC2", ...defer("perf=mcp:launch:e22d/w1.7")]
+      );
+      expect(result.exit).toBe(0);
+      expect(result.calls.find((call) => call.startsWith("comment "))).toBe(
+        `comment owner/repo#1 merge-gate: the lead deferred these skipped boxes of the verdict ${verdict.url} to their owners to merge ${repos.head}.\n\n- perf: mcp:launch:e22d/w1.7. Owed: Trunk lacks the feature, so no comparison ran.`
+      );
+      expect(result.log().split("\n")[1]).toEndWith(
+        '\tmerge\tmerged\t\t[{"kind":"defer","id":"perf","reason":"mcp:launch:e22d/w1.7"}]'
+      );
+    });
+
+    it("exits 2 on a --defer with no owner, or one that is neither a Linear id nor a workflow step", async () => {
+      for (const [value, text] of [
+        ["perf", "box perf needs an owner, a Linear id such as LH-215 or an open workflow step as <thread id>/w<n>.<n>: --defer perf=<owner>"],
+        ["perf=", "box perf needs an owner, a Linear id such as LH-215 or an open workflow step"],
+        ["perf=later", 'owner "later" is not a Linear id such as LH-215 or an open workflow step'],
+        ["perf=runs on staging after merge", "is not a Linear id"],
+        ["perf=w1.7", "is not a Linear id"],
+      ] as const) {
+        const result = await planGate([verdictWith(perfSkipped())], [...planFlags, ...defer(value)]);
+        expect(result.exit).toBe(2);
+        expect(result.out).toContain(text);
+      }
+    });
+
+    it("exits 2 on a box both accepted and deferred, or deferred when the verdict did not skip it", async () => {
+      const both = await planGate(
+        [verdictWith(perfSkipped())],
+        [...planFlags, ...waive("perf=covered by GC4"), ...defer("perf=LH-215")]
+      );
+      expect(both.exit).toBe(2);
+      expect(both.out).toContain("box perf is both accepted and deferred");
+      const stray = await planGate([verdictWith(allDone())], [...planFlags, ...defer("perf=LH-215")]);
+      expect(stray.exit).toBe(2);
+      expect(stray.out).toContain("--defer perf: the verdict");
+      expect(stray.out).toContain("does not skip box perf");
     });
 
     it("exits 2 on an --accept-skip for a box the verdict did not skip", async () => {
@@ -821,7 +887,7 @@ describe("merge-gate", () => {
         ["--check"]
       );
       expect(result.exit).toBe(1);
-      expect(result.out).toContain("  not waived: perf");
+      expect(result.out).toContain("  not accepted: perf");
       expect((await planGate([verdictWith([])], ["--check"])).out).toContain(
         "met: Plan boxes (no plan given, 0 boxes listed)"
       );
@@ -837,6 +903,73 @@ describe("merge-gate", () => {
       const alone = await planGate([verdictWith(allDone())], ["--check", "--plan", plan]);
       expect(alone.exit).toBe(2);
       expect(alone.out).toContain("--plan and --plan-pr go together");
+    });
+  });
+
+  describe("shortcuts", () => {
+    const carried =
+      "shortcut live-1: not rerun; carries the passing lane from the verdict at 9f7e294. Only features/README.md changed, which the lane does not run.";
+    const withShortcuts = (...lines: string[]) =>
+      comment(
+        `pstack-verdict: PASS head=${repos.head} base=${repos.main} by=codex/gpt-6.1-sol\n\nGates rerun at this head.\n${lines.join("\n")}`
+      );
+    const shortcutGate = (verdict: IssueComment, flags: readonly string[]) =>
+      gate({ comments: [verdict, codexComment(repos.head)] }, flags);
+    const accept = (...values: string[]) =>
+      values.flatMap((value) => ["--accept-shortcut", value]);
+
+    it("says none were listed when the verdict lists none", async () => {
+      const result = await gate();
+      expect(result.out).toContain("met: Shortcuts (none listed)");
+    });
+
+    it("refuses a shortcut the lead has not accepted, with or without a plan", async () => {
+      const result = await shortcutGate(withShortcuts(carried), ["--check"]);
+      expect(result.exit).toBe(1);
+      expect(result.missing[0]).toContain(
+        'missing: Shortcuts. 1 shortcut is not accepted by the lead. Rerun what it skipped and get a new verdict, or, if the lead accepts it, the lead runs the gate with "--accept-shortcut <id>=<reason>"'
+      );
+      expect(result.out).toContain(`  not accepted: ${carried}`);
+    });
+
+    it("merges once the lead accepts each shortcut, posting and logging the acceptance", async () => {
+      const verdict = withShortcuts(carried, "- shortcut perf: not rerun; carries perf from 9f7e294. No code the probe runs changed.");
+      const half = await shortcutGate(verdict, ["--check", ...accept("live-1=docs only")]);
+      expect(half.exit).toBe(1);
+      expect(half.out).toContain("  not accepted: shortcut perf: not rerun");
+      const result = await shortcutGate(verdict, accept("live-1=docs only", "perf=the probe's code is unchanged"));
+      expect(result.exit).toBe(0);
+      expect(result.out).toContain(
+        `met: Shortcuts (2 accepted by the lead)\n  ${carried} Accepted: docs only\n`
+      );
+      expect(result.calls.find((call) => call.startsWith("comment "))).toBe(
+        `comment owner/repo#1 merge-gate: the lead accepted these shortcuts the verdict ${verdict.url} lists to merge ${repos.head}.\n\n- live-1: docs only\n- perf: the probe's code is unchanged`
+      );
+      expect(result.log().split("\n")[1]).toEndWith(
+        `\tmerge\tmerged\t\t[{"kind":"shortcut","id":"live-1","reason":"docs only"},{"kind":"shortcut","id":"perf","reason":"the probe's code is unchanged"}]`
+      );
+    });
+
+    it("refuses a shortcut line it cannot read, and one listed twice", async () => {
+      const result = await shortcutGate(
+        withShortcuts(carried, carried, "shortcut Live 1: not rerun", "Shortcut live-3: not rerun, written capitalized"),
+        ["--check", ...accept("live-1=docs only")]
+      );
+      expect(result.exit).toBe(1);
+      expect(result.out).toContain("  listed more than once: live-1");
+      expect(result.out).toContain("  unread: shortcut Live 1: not rerun");
+      expect(result.out).toContain("  unread: Shortcut live-3: not rerun, written capitalized");
+      expect(result.out).toContain("with <id> the box id such as live-1, or a lowercase slug with hyphens");
+    });
+
+    it("exits 2 on an --accept-shortcut the verdict does not list, and on one with no reason", async () => {
+      const stray = await shortcutGate(withShortcuts(carried), ["--check", ...accept("live-1=docs only", "perf=unchanged")]);
+      expect(stray.exit).toBe(2);
+      expect(stray.out).toContain("--accept-shortcut perf: the verdict");
+      expect(stray.out).toContain("lists no shortcut perf");
+      const bare = await shortcutGate(withShortcuts(carried), ["--check", ...accept("live-1")]);
+      expect(bare.exit).toBe(2);
+      expect(bare.out).toContain("shortcut live-1 needs a reason: --accept-shortcut live-1=<reason>");
     });
   });
 
@@ -1345,7 +1478,7 @@ describe("merge-gate", () => {
       );
       expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
       expect(result.log().split("\n")[1]).toEndWith(
-        `\tcheck\twould-merge\t\tcheck checks: ${reason}`
+        `\tcheck\twould-merge\t\t[{"kind":"waiver","id":"checks","reason":"${reason}"}]`
       );
     });
 
@@ -1361,7 +1494,7 @@ describe("merge-gate", () => {
       );
       expect(posted).toBeLessThan(result.calls.findIndex((call) => call.startsWith("merge ")));
       expect(result.log().split("\n")[1]).toEndWith(
-        `\tmerge\tmerged\t\tcheck checks: ${reason}; check codex: Codex is out of quota today`
+        `\tmerge\tmerged\t\t[{"kind":"waiver","id":"checks","reason":"${reason}"},{"kind":"waiver","id":"codex","reason":"Codex is out of quota today"}]`
       );
     });
 
