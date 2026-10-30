@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: retro.mjs <command>
@@ -14,7 +14,8 @@ const USAGE = `usage: retro.mjs <command>
   open [--threads ID,ID] [--input PATH]... [--at YYYY-MM-DD] [--earlier REASON]
   close <round> [--at YYYY-MM-DD]
   backlog [--all]
-  remind [--answered]`;
+  remind [--answered]
+  migrate-paths`;
 
 // A delegated child's id is its request key run through encodeURIComponent, so it is one path
 // component: never "/" or "\\", and its fixed prefix keeps it from being "." or "..".
@@ -140,7 +141,7 @@ function load() {
     for (const name of readdirSync(RETRO).sort()) {
       const file = join(RETRO, name, "thread.json");
       if (!existsSync(file)) continue;
-      const rec = readJson(file, problems);
+      const rec = readRecord(file, problems);
       if (rec) threads.set(rec.thread, rec);
     }
   }
@@ -148,7 +149,7 @@ function load() {
     for (const name of readdirSync(ROUNDS).sort()) {
       const file = join(ROUNDS, name, "round.json");
       if (!existsSync(file)) continue;
-      const rec = readJson(file, problems);
+      const rec = readRecord(file, problems);
       if (rec) rounds.push(rec);
     }
   }
@@ -188,6 +189,29 @@ function dueReason({ threads, rounds }, at) {
 function within(path, dir) {
   return path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 }
+
+const storedPath = (path) => (within(path, RETRO) ? relative(RETRO, path) : path);
+
+function pathFromAnyStore(path) {
+  if (!isAbsolute(path)) return join(RETRO, path);
+  if (within(path, RETRO)) return path;
+  const parts = path.split(sep);
+  const at = parts.findIndex((p, i) => p === "retro" && parts[i + 1] && existsSync(join(RETRO, parts[i + 1])));
+  return at === -1 ? path : join(RETRO, ...parts.slice(at + 1));
+}
+
+const RECORD_PATHS = {
+  "thread.json": (rec, f) => ({ ...rec, reflects: rec.reflects.map((c) => ({ ...c, dir: f(c.dir) })), trails: rec.trails.map((t) => ({ ...t, source: f(t.source), path: f(t.path) })) }),
+  "round.json": (rec, f) => ({ ...rec, reflects: rec.reflects.map(f), inputs: rec.inputs.map((x) => ({ ...x, source: f(x.source), copy: f(x.copy) })) }),
+};
+
+function readRecord(file, problems) {
+  const rec = readJson(file, problems);
+  return rec && RECORD_PATHS[basename(file)](rec, pathFromAnyStore);
+}
+
+const recordText = (file, rec) => `${JSON.stringify(RECORD_PATHS[basename(file)](rec, storedPath), null, 2)}\n`;
+const writeRecord = (file, rec) => writeAtomic(file, recordText(file, rec));
 
 function real(path) {
   try {
@@ -289,7 +313,7 @@ function threadRecord(id, args, at) {
   if (!THREAD_ID.test(id ?? "")) refuse(`needs a T3 thread id (a UUID, mcp: and a UUID, or a child's thread:delegated-task:... id), got ${id ?? "nothing"}`);
   const file = join(RETRO, id, "thread.json");
   const problems = [];
-  const rec = (existsSync(file) && readJson(file, problems)) || {
+  const rec = (existsSync(file) && readRecord(file, problems)) || {
     thread: id,
     title: null,
     project: null,
@@ -318,7 +342,7 @@ function cmdReflect(args) {
   const { rec, file, home } = threadRecord(args._[0], args, at);
   const dir = unique(join(home, `reflect-${compact(at)}`));
   mkdirSync(dir);
-  writeJson(file, rec);
+  writeRecord(file, rec);
   save(`reflect ${rec.thread}`);
   console.log(dir);
 }
@@ -332,7 +356,7 @@ function cmdRegister(args) {
   const plans = [...new Set(args.trail.map((trail) => resolve(trail)))].map((trail) => planTrail(rec, trail));
   for (const plan of plans) applyTrail(home, rec, plan, at);
   if (dir && !rec.reflects.some((c) => c.dir === dir)) rec.reflects.push({ dir, completedAt: stamp(at) });
-  writeJson(file, rec);
+  writeRecord(file, rec);
   save(`register ${rec.thread}`);
   console.log(home);
 }
@@ -691,7 +715,7 @@ function cmdOpen(args) {
   }
   writeAtomic(join(dir, "README.md"), roundReadme(round, state));
   writeAtomic(join(dir, "backlog.md"), gatherBacklog(ids.map((id) => ({ id, dirs: reflects.filter((d) => within(d, join(RETRO, id))) })), state.threads));
-  writeJson(join(dir, "round.json"), round);
+  writeRecord(join(dir, "round.json"), round);
   save(`open round ${round.round}`);
   console.log(dir);
 }
@@ -701,7 +725,7 @@ function cmdClose(args) {
   const file = join(ROUNDS, id ?? "", "round.json");
   if (!/^\d{4}-\d{2}-\d{2}(-\d+)?$/.test(id ?? "") || !existsSync(file)) refuse(`no round ${id ?? "given"}; see ${SELF} status`);
   const problems = [];
-  const round = readJson(file, problems);
+  const round = readRecord(file, problems);
   if (!round) refuse(problems.join("\n"));
   if (round.closedAt) refuse(`round ${id} closed at ${round.closedAt}`);
   const required = round.earlier ? ["synthesis.md"] : ROUND_OUTPUTS;
@@ -710,7 +734,7 @@ function cmdClose(args) {
   const closedAt = atOrNow(args.at);
   if (closedAt < new Date(round.openedAt)) refuse(`round ${id} opened at ${round.openedAt}; it cannot close before that`);
   round.closedAt = stamp(closedAt);
-  writeJson(file, round);
+  writeRecord(file, round);
   save(`close round ${id}`);
   console.log(`closed round ${id}`);
 }
@@ -739,6 +763,22 @@ function cmdRemind(args) {
   console.log(`ASK: ${reason}`);
 }
 
+function cmdMigratePaths() {
+  const homes = existsSync(RETRO) ? readdirSync(RETRO).map((n) => join(RETRO, n, "thread.json")) : [];
+  const rounds = existsSync(ROUNDS) ? readdirSync(ROUNDS).map((n) => join(ROUNDS, n, "round.json")) : [];
+  const problems = [];
+  const rewrites = [...homes, ...rounds].filter(isFile).map((file) => {
+    const rec = readRecord(file, problems);
+    return { file, text: rec && recordText(file, rec) };
+  });
+  if (problems.length) refuse(problems.join("\n"));
+  const changed = rewrites.filter(({ file, text }) => text !== readFileSync(file, "utf-8"));
+  if (!changed.length) return console.log(`every record already stores paths inside ${RETRO} relative to it`);
+  for (const { file, text } of changed) writeAtomic(file, text);
+  save(`store paths relative to the retro folder in ${changed.length} records`);
+  console.log(`rewrote ${changed.length} of ${rewrites.length} records`);
+}
+
 const FLAGS = new Set(["all", "answered"]);
 const OPTIONS = new Set(["title", "project", "model", "trail", "threads", "input", "at", "earlier", "reflected"]);
 
@@ -764,7 +804,7 @@ function parse(argv) {
   return args;
 }
 
-const COMMANDS = { reflect: cmdReflect, register: cmdRegister, status: cmdStatus, open: cmdOpen, close: cmdClose, backlog: cmdBacklog, remind: cmdRemind };
+const COMMANDS = { reflect: cmdReflect, register: cmdRegister, status: cmdStatus, open: cmdOpen, close: cmdClose, backlog: cmdBacklog, remind: cmdRemind, "migrate-paths": cmdMigratePaths };
 
 try {
   const [command, ...rest] = process.argv.slice(2);

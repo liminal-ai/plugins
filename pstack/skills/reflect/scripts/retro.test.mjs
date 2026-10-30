@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "retro.mjs");
@@ -28,6 +28,7 @@ function sandbox(t) {
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
   const home = (id) => join(store, "retro", id);
+  const inRetro = (path) => join(store, "retro", path);
   const record = (id) => JSON.parse(readFileSync(join(home(id), "thread.json"), "utf-8"));
   const reflect = (id, nowIso, files = {}) => {
     const allocated = run(["reflect", id], nowIso);
@@ -43,7 +44,7 @@ function sandbox(t) {
     for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(dir, f), "x\n");
     return run(["close", round], nowIso);
   };
-  return { store, run, home, record, reflect, closeRound, env };
+  return { store, run, home, inRetro, record, reflect, closeRound, env };
 }
 
 function scratchDir(t) {
@@ -147,7 +148,7 @@ test("a second reflect keeps the first, and a retry keeps the completion time", 
 });
 
 test("copied trails keep every version; an unchanged source adds none", (t) => {
-  const { store, run, record } = sandbox(t);
+  const { store, run, inRetro, record } = sandbox(t);
   const scratch = scratchDir(t);
   const file = join(scratch, "review.md");
   writeFileSync(file, "first flags\n");
@@ -162,9 +163,9 @@ test("copied trails keep every version; an unchanged source adds none", (t) => {
   run(["register", A, "--trail", file], "2026-10-01T11:00:00Z");
   const copies = record(A).trails.filter((x) => x.source === file);
   assert.equal(copies.length, 2);
-  assert.equal(readFileSync(copies[0].path, "utf-8"), "first flags\n");
-  assert.equal(readFileSync(copies[1].path, "utf-8"), "replacement flags\n");
-  assert.ok(run(["status"]).out.includes(copies[1].path), "status shows the newest version");
+  assert.equal(readFileSync(inRetro(copies[0].path), "utf-8"), "first flags\n");
+  assert.equal(readFileSync(inRetro(copies[1].path), "utf-8"), "replacement flags\n");
+  assert.ok(run(["status"]).out.includes(inRetro(copies[1].path)), "status shows the newest version");
 
   rmSync(file);
   const gone = run(["register", A, "--trail", file]);
@@ -174,7 +175,7 @@ test("copied trails keep every version; an unchanged source adds none", (t) => {
 });
 
 test("symlinked trails are materialized or linked by their real target", (t) => {
-  const { store, run, record } = sandbox(t);
+  const { store, run, inRetro, record } = sandbox(t);
   const scratch = scratchDir(t);
   writeFileSync(join(scratch, "evidence.md"), "e\n");
   mkdirSync(join(scratch, "alias"));
@@ -189,12 +190,12 @@ test("symlinked trails are materialized or linked by their real target", (t) => 
   const trails = record(A).trails;
   rmSync(join(scratch, "evidence.md"));
   rmSync(join(scratch, "alias-to-store.tsv"));
-  for (const x of trails.filter((x) => x.mode === "copied")) {
-    const files = lstatSync(x.path).isDirectory() ? readdirSync(x.path).map((n) => join(x.path, n)) : [x.path];
+  for (const x of trails.filter((x) => x.mode === "copied").map((x) => inRetro(x.path))) {
+    const files = lstatSync(x).isDirectory() ? readdirSync(x).map((n) => join(x, n)) : [x];
     for (const f of files) assert.equal(readFileSync(f, "utf-8"), "e\n", `${f} survives its source`);
   }
   assert.equal(trails.filter((x) => x.mode === "copied").length, 2);
-  assert.equal(trails.find((x) => x.mode === "linked").path, join(store, "retro", "notes", "real.tsv"));
+  assert.equal(trails.find((x) => x.mode === "linked").path, join("notes", "real.tsv"));
 });
 
 test("a committed, clean, pushed trail is linked; unpushed, modified or in a linked worktree it is copied", (t) => {
@@ -252,7 +253,7 @@ test("a round gathers waiting threads, refuses a second open, and closes only wi
   assert.equal(opened.out.trim(), dir);
   const round = JSON.parse(readFileSync(join(dir, "round.json"), "utf-8"));
   assert.deepEqual(round.threads.sort(), [A, B]);
-  assert.ok(round.reflects.includes(dirA));
+  assert.ok(round.reflects.includes(relative(join(store, "retro"), dirA)));
   assert.equal(readFileSync(join(dir, "inputs", A, dirA.split("/").at(-1), "synthesis.md"), "utf-8"), "findings\n");
   assert.match(readFileSync(join(dir, "backlog.md"), "utf-8"), /a script for X/);
   assert.match(readFileSync(join(dir, "README.md"), "utf-8"), /merge-gate\.md/);
@@ -622,7 +623,7 @@ test("a secret in a file git calls binary still blocks the push", (t) => {
 });
 
 test("a copied trail that is a git repo reaches the backup as files, not a gitlink", (t) => {
-  const { store, run, record } = sandbox(t);
+  const { store, run, inRetro, record } = sandbox(t);
   const { pushedFiles } = backedUp(t, store);
   const { repo, git } = gitRepo(t);
   writeFileSync(join(repo, "decisions.tsv"), "ts\tphase\nunpushed\n");
@@ -630,9 +631,8 @@ test("a copied trail that is a git repo reaches the backup as files, not a gitli
   run(["register", A, "--trail", repo]);
   const trail = record(A).trails[0];
   assert.equal(trail.mode, "copied");
-  const relative = trail.path.slice(join(store, "retro").length + 1);
-  assert.ok(pushedFiles().includes(`${relative}/decisions.tsv`), "the trail's files are in the backup");
-  assert.ok(!existsSync(join(trail.path, ".git")));
+  assert.ok(pushedFiles().includes(`${trail.path}/decisions.tsv`), "the trail's files are in the backup");
+  assert.ok(!existsSync(join(inRetro(trail.path), ".git")));
 });
 
 test("a copied trail's own ignore rules do not keep its files out of the backup", (t) => {
@@ -643,9 +643,9 @@ test("a copied trail's own ignore rules do not keep its files out of the backup"
   writeFileSync(join(trail, "decisions.tsv"), "ts\tphase\n");
   writeFileSync(join(trail, "run.tmp-1"), "scratch\n");
   run(["register", A, "--trail", trail]);
-  const relative = record(A).trails[0].path.slice(join(store, "retro").length + 1);
-  assert.ok(pushedFiles().includes(`${relative}/decisions.tsv`));
-  assert.ok(!pushedFiles().includes(`${relative}/run.tmp-1`), "the retro folder's own rules still apply");
+  const { path } = record(A).trails[0];
+  assert.ok(pushedFiles().includes(`${path}/decisions.tsv`));
+  assert.ok(!pushedFiles().includes(`${path}/run.tmp-1`), "the retro folder's own rules still apply");
 });
 
 test("a file written during the scan or before the push is never pushed unscanned", (t) => {
@@ -896,4 +896,97 @@ test("registers a delegated child's thread id", (t) => {
   run(["register", paren, "--title", "paren"]);
   assert.ok(run(["status"]).out.includes(`[paren](<t3-thread://v1/${paren}>)`));
   assert.match(run(["status"]).out, /lane 7/);
+});
+
+function absolutize(file, retro) {
+  const rec = JSON.parse(readFileSync(file, "utf-8"));
+  const abs = (p) => (isAbsolute(p) ? p : join(retro, p));
+  if (file.endsWith("thread.json")) {
+    rec.reflects = rec.reflects.map((c) => ({ ...c, dir: abs(c.dir) }));
+    rec.trails = rec.trails.map((x) => ({ ...x, source: abs(x.source), path: abs(x.path) }));
+  } else {
+    rec.reflects = rec.reflects.map(abs);
+    rec.inputs = rec.inputs.map((x) => ({ ...x, source: abs(x.source), copy: abs(x.copy) }));
+  }
+  writeFileSync(file, `${JSON.stringify(rec, null, 2)}\n`);
+}
+
+test("paths inside the retro folder are stored relative to it, so another machine's store reads them", (t) => {
+  const { store, run, record, reflect } = sandbox(t);
+  const trail = join(scratchDir(t), "decisions.tsv");
+  writeFileSync(trail, "row\n");
+  const dir = reflect(A, "2026-10-20T09:00:00Z", { "backlog.md": "- a script for X\n" });
+  run(["register", A, "--trail", trail], "2026-10-20T09:00:00Z");
+  const rec = record(A);
+  assert.equal(rec.reflects[0].dir, relative(join(store, "retro"), dir));
+  assert.ok(rec.trails[0].path.startsWith(`${A}/trails/`), rec.trails[0].path);
+  assert.equal(rec.trails[0].source, trail, "a path outside the retro folder stays absolute");
+  const lookalike = join(scratchDir(t), "retro", A, "notes.md");
+  mkdirSync(dirname(lookalike), { recursive: true });
+  writeFileSync(lookalike, "n\n");
+  run(["register", A, "--trail", lookalike], "2026-10-20T09:00:00Z");
+  assert.equal(record(A).trails.at(-1).source, lookalike, "a project's own retro folder is not the store's");
+
+  const other = sandbox(t);
+  cpSync(join(store, "retro"), join(other.store, "retro"), { recursive: true });
+  const status = other.run(["status"], "2026-10-20T10:00:00Z").out;
+  assert.ok(status.includes(other.inRetro(rec.reflects[0].dir)), "the reflect reads under this machine's store");
+  assert.ok(status.includes(other.inRetro(rec.trails[0].path)));
+  assert.doesNotMatch(status, /## Problems/);
+  assert.match(other.run(["backlog"]).out, /a script for X/);
+  assert.equal(other.run(["open", "--at", "2026-10-20"]).code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(other.inRetro("rounds/2026-10-20/round.json"), "utf-8")).reflects, [rec.reflects[0].dir]);
+});
+
+test("records saved with absolute paths, here or on a Mac, read the same before and after migrate-paths, which runs once", (t) => {
+  const { store, run, home, inRetro, reflect, closeRound } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  const mac = "/Users/leemoore/.local/state/pstack/retro";
+  const idOutsideThreadPattern = "limhealth-2026-10-16";
+  const folderOutsideThreadPattern = inRetro("limhealth-restart-2026-10-16");
+  mkdirSync(folderOutsideThreadPattern);
+  writeFileSync(join(folderOutsideThreadPattern, "notes.md"), "n\n");
+  const trail = join(scratchDir(t), "decisions.tsv");
+  writeFileSync(trail, "row\n");
+  reflect(A, "2026-10-19T09:00:00Z");
+  run(["open", "--threads", A, "--input", folderOutsideThreadPattern, "--at", "2026-10-19"], "2026-10-19T10:00:00Z");
+  closeRound("2026-10-19", "2026-10-19T11:00:00Z");
+  reflect(B, "2026-10-20T09:00:00Z");
+  run(["register", B, "--trail", trail], "2026-10-20T09:00:00Z");
+  mkdirSync(inRetro(`${idOutsideThreadPattern}/reflect-1`), { recursive: true });
+  writeFileSync(inRetro(`${idOutsideThreadPattern}/reflect-1/synthesis.md`), "findings\n");
+  writeFileSync(inRetro(`${idOutsideThreadPattern}/reflect-1/backlog.md`), "- from the Mac\n");
+  const at = "2026-10-16T09:00:00Z";
+  writeFileSync(
+    inRetro(`${idOutsideThreadPattern}/thread.json`),
+    JSON.stringify({ thread: idOutsideThreadPattern, title: "legacy", project: null, firstRegistered: at, lastRegistered: at, reflects: [{ dir: "reflect-1", completedAt: at }], trails: [] }),
+  );
+  absolutize(inRetro(`${idOutsideThreadPattern}/thread.json`), join(mac, idOutsideThreadPattern));
+  absolutize(join(home(A), "thread.json"), mac);
+  absolutize(inRetro("rounds/2026-10-19/round.json"), mac);
+  absolutize(join(home(B), "thread.json"), join(store, "retro"));
+  const records = [join(home(A), "thread.json"), join(home(B), "thread.json"), inRetro(`${idOutsideThreadPattern}/thread.json`), inRetro("rounds/2026-10-19/round.json")];
+  const NOW = "2026-10-21T09:00:00Z";
+
+  const before = run(["status"], NOW).out;
+  assert.doesNotMatch(before, /## Problems/);
+  assert.doesNotMatch(before, /aaaaaaaa[^\n]*reflect-/, "the Mac's round took A's reflect");
+  assert.ok(before.includes(inRetro(`${idOutsideThreadPattern}/reflect-1`)), "the Mac's path reads under this store");
+  assert.match(run(["backlog"]).out, /from the Mac/);
+
+  const migrated = run(["migrate-paths"], NOW);
+  assert.equal(migrated.code, 0, migrated.err);
+  assert.match(migrated.out, /rewrote 4 of 4 records/);
+  for (const file of records) {
+    const text = readFileSync(file, "utf-8");
+    assert.ok(!text.includes(mac) && !text.includes(join(store, "retro")), `${file} holds no absolute retro path`);
+  }
+  assert.equal(run(["status"], NOW).out, before);
+  assert.equal(pushed()[0], "retro: store paths relative to the retro folder in 4 records");
+
+  const texts = records.map((f) => readFileSync(f, "utf-8"));
+  const again = run(["migrate-paths"], NOW);
+  assert.match(again.out, /already stores paths/);
+  assert.deepEqual(records.map((f) => readFileSync(f, "utf-8")), texts);
+  assert.equal(pushed()[0], "retro: store paths relative to the retro folder in 4 records", "a second run commits nothing");
 });
