@@ -70,7 +70,7 @@ Aim for about 20 arrows or fewer, because a busier chart is hard to read. First 
 
 ## Show the chart
 
-Show each chart to the user as its Pele SVG on a self-contained HTML page, checked with `html_preview` and published with `html_render`, and give `chart.mmd` as a `mermaid` code block. The chart has a budget of 500 states, counted by TLC on the config as written. Above that, the chart draws only the paths to the rules that break, and when no rule breaks, the command writes no `chart.mmd`. It still checks each rule, and the report gives the state count and each bug path. To see the whole graph, make the model smaller.
+Show each chart to the user as its Pele SVG on a self-contained HTML page, checked with `html_preview` and published with `html_render`, with the Mermaid text of `chart.mmd` on the same page. The chart has a budget of 500 states, counted by TLC on the config as written. Above that, the chart draws only the paths to the rules that break, and when no rule breaks, the command writes no `chart.mmd`. It still checks each rule, and the report gives the state count and each bug path. To see the whole graph, make the model smaller.
 
 Render charts with Pele, per `references/render.md`. Do not use a different renderer unless the user asks for it.
 
