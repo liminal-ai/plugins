@@ -547,6 +547,16 @@ test("a thread launched with a clientRequestId, with an mcp:launch: id, register
   assert.match(run(["register", "mcp:launch:../../etc"]).err, /needs a T3 thread id/);
 });
 
+test("a thread from create_threads, with a thread:mcp: id, registers and reflects", (t) => {
+  const { run, reflect } = sandbox(t);
+  const id = `thread:mcp:${encodeURIComponent("provider-session:1")}:${encodeURIComponent("lane a/b")}:0`;
+  reflect(id);
+  assert.match(run(["status"]).out, /\[lane%20a\]\(t3-thread:\/\/v1\/thread:mcp:provider-session%3A1:lane%20a%2Fb:0\)/);
+  for (const bad of ["thread:mcp:a:../../etc:0", "thread:mcp:a:b\\c:0", "thread:mcp:a:b:x", "thread:mcp::b:0", `thread:mcp:a:${"b".repeat(230)}:0`]) {
+    assert.match(run(["register", bad]).err, /needs a T3 thread id/, bad);
+  }
+});
+
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);
