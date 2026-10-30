@@ -682,11 +682,11 @@ describe("merge-gate", () => {
 
     it("exits 2 on a --defer with no owner, or one that is neither a Linear id nor a workflow step", async () => {
       for (const [value, text] of [
-        ["perf", "box perf needs an owner: --defer perf=<owner>"],
-        ["perf=", "box perf needs an owner"],
-        ["perf=later", 'owner "later" is neither a Linear id'],
-        ["perf=runs on staging after merge", "is neither a Linear id"],
-        ["perf=w1.7", "is neither a Linear id"],
+        ["perf", "box perf needs an owner, a Linear id such as LH-215 or an open workflow step as <thread id>/w<n>.<n>: --defer perf=<owner>"],
+        ["perf=", "box perf needs an owner, a Linear id such as LH-215 or an open workflow step"],
+        ["perf=later", 'owner "later" is not a Linear id such as LH-215 or an open workflow step'],
+        ["perf=runs on staging after merge", "is not a Linear id"],
+        ["perf=w1.7", "is not a Linear id"],
       ] as const) {
         const result = await planGate([verdictWith(perfSkipped())], [...planFlags, ...defer(value)]);
         expect(result.exit).toBe(2);
@@ -952,12 +952,14 @@ describe("merge-gate", () => {
 
     it("refuses a shortcut line it cannot read, and one listed twice", async () => {
       const result = await shortcutGate(
-        withShortcuts(carried, carried, "shortcut Live 1: not rerun"),
+        withShortcuts(carried, carried, "shortcut Live 1: not rerun", "Shortcut live-3: not rerun, written capitalized"),
         ["--check", ...accept("live-1=docs only")]
       );
       expect(result.exit).toBe(1);
       expect(result.out).toContain("  listed more than once: live-1");
       expect(result.out).toContain("  unread: shortcut Live 1: not rerun");
+      expect(result.out).toContain("  unread: Shortcut live-3: not rerun, written capitalized");
+      expect(result.out).toContain("with <id> the box id such as live-1, or a lowercase slug with hyphens");
     });
 
     it("exits 2 on an --accept-shortcut the verdict does not list, and on one with no reason", async () => {

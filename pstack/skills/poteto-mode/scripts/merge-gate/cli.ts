@@ -24,6 +24,7 @@ import {
   BOX_ID,
   type CheckWaiver,
   type Deferral,
+  DEFER_OWNER_FORMS,
   type Facts,
   type PlanRef,
   type PrRef,
@@ -149,11 +150,11 @@ function collectDeferral(value: string, previous: readonly Deferral[]): Deferral
     previous,
     "box",
     BOX_ID,
-    "an owner: --defer <id>=<owner>"
+    `an owner, ${DEFER_OWNER_FORMS}: --defer <id>=<owner>`
   );
   if (!isDeferOwner(owner))
     throw new InvalidArgumentError(
-      `box ${id}'s owner "${owner}" is neither a Linear id such as LH-215 nor an open workflow step as <thread id>/w<n>.<n>. Owed work needs an owner that will pick it up`
+      `box ${id}'s owner "${owner}" is not ${DEFER_OWNER_FORMS}. Owed work needs an owner that will pick it up`
     );
   return [...previous, { id, owner }];
 }

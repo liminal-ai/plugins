@@ -205,7 +205,9 @@ const BOX_LINE =
 const BOX_PREFIX = /^(?:[-*] )?box /;
 export const SHORTCUT_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SHORTCUT_LINE = /^(?:[-*] )?shortcut ([a-z0-9]+(?:-[a-z0-9]+)*): (\S.*)$/;
-const SHORTCUT_PREFIX = /^(?:[-*] )?shortcut /;
+const SHORTCUT_PREFIX = /^(?:[-*] )?shortcut\b/i;
+export const DEFER_OWNER_FORMS =
+  "a Linear id such as LH-215 or an open workflow step as <thread id>/w<n>.<n>";
 const LINEAR_ID = /^[A-Z][A-Z0-9]*-\d+$/;
 const WORKFLOW_STEP = /^\S+\/w\d+\.\d+$/;
 export const isDeferOwner = (owner: string): boolean =>
@@ -673,7 +675,7 @@ const planBoxes: Requirement = {
 };
 
 export const SHORTCUT_FORM =
-  '"shortcut <id>: <what was not rerun, and the verdict it carries>. <why nothing that changed reaches it>"';
+  '"shortcut <id>: <what was not rerun, and the verdict it carries>. <why nothing that changed reaches it>", with <id> the box id such as live-1, or a lowercase slug with hyphens';
 
 const shortcuts: Requirement = {
   name: "Shortcuts",
