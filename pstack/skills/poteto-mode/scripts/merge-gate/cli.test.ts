@@ -586,7 +586,7 @@ describe("merge-gate", () => {
       );
       expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
       expect(result.log().split("\n")[1]).toEndWith(
-        "\tcheck\twould-merge\t\tskip perf: GC4 measures the same path against trunk."
+        '\tcheck\twould-merge\t\t[{"kind":"skip","id":"perf","reason":"GC4 measures the same path against trunk."}]'
       );
     });
 
@@ -606,7 +606,7 @@ describe("merge-gate", () => {
       );
       expect(result.calls.filter((call) => call.startsWith("comment "))).toHaveLength(1);
       expect(result.log().split("\n")[1]).toEndWith(
-        "\tmerge\tmerged\t\tskip perf: GC4 measures the same path against trunk."
+        '\tmerge\tmerged\t\t[{"kind":"skip","id":"perf","reason":"GC4 measures the same path against trunk."}]'
       );
     });
 
@@ -676,7 +676,7 @@ describe("merge-gate", () => {
         `comment owner/repo#1 merge-gate: the lead deferred these skipped boxes of the verdict ${verdict.url} to their owners to merge ${repos.head}.\n\n- perf: mcp:launch:e22d/w1.7. Owed: Trunk lacks the feature, so no comparison ran.`
       );
       expect(result.log().split("\n")[1]).toEndWith(
-        "\tmerge\tmerged\t\tdefer perf: mcp:launch:e22d/w1.7"
+        '\tmerge\tmerged\t\t[{"kind":"defer","id":"perf","reason":"mcp:launch:e22d/w1.7"}]'
       );
     });
 
@@ -946,7 +946,7 @@ describe("merge-gate", () => {
         `comment owner/repo#1 merge-gate: the lead accepted these shortcuts the verdict ${verdict.url} lists to merge ${repos.head}.\n\n- live-1: docs only\n- perf: the probe's code is unchanged`
       );
       expect(result.log().split("\n")[1]).toEndWith(
-        "\tmerge\tmerged\t\tshortcut live-1: docs only; shortcut perf: the probe's code is unchanged"
+        `\tmerge\tmerged\t\t[{"kind":"shortcut","id":"live-1","reason":"docs only"},{"kind":"shortcut","id":"perf","reason":"the probe's code is unchanged"}]`
       );
     });
 
@@ -1476,7 +1476,7 @@ describe("merge-gate", () => {
       );
       expect(result.calls.some((call) => call.startsWith("comment "))).toBe(false);
       expect(result.log().split("\n")[1]).toEndWith(
-        `\tcheck\twould-merge\t\tcheck checks: ${reason}`
+        `\tcheck\twould-merge\t\t[{"kind":"waiver","id":"checks","reason":"${reason}"}]`
       );
     });
 
@@ -1492,7 +1492,7 @@ describe("merge-gate", () => {
       );
       expect(posted).toBeLessThan(result.calls.findIndex((call) => call.startsWith("merge ")));
       expect(result.log().split("\n")[1]).toEndWith(
-        `\tmerge\tmerged\t\tcheck checks: ${reason}; check codex: Codex is out of quota today`
+        `\tmerge\tmerged\t\t[{"kind":"waiver","id":"checks","reason":"${reason}"},{"kind":"waiver","id":"codex","reason":"Codex is out of quota today"}]`
       );
     });
 

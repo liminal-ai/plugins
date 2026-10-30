@@ -82,7 +82,7 @@ interface RunRecord {
     | "merged-elsewhere"
     | "error";
   readonly missing: readonly string[];
-  readonly accepted: readonly string[];
+  readonly accepted: readonly AcceptedEntry[];
 }
 
 const LOG_HEADER = "ts\trepo\tpr\thead\tmode\toutcome\tmissing\twaived\n";
@@ -176,28 +176,32 @@ function collectCheckWaiver(
   return [...previous, { check, reason }];
 }
 
-export type AcceptedKind = "skip" | "defer" | "shortcut" | "waiver";
+export interface AcceptedEntry {
+  readonly kind: "skip" | "defer" | "shortcut" | "waiver";
+  readonly id: string;
+  /** The lead's reason, or a deferral's owner. */
+  readonly reason: string;
+}
 
-const acceptedCells = ({ skips, deferrals, shortcuts, checks }: Acceptances): string[] => [
-  ...skips.map(({ id, reason }) => `skip ${id}: ${reason}`),
-  ...deferrals.map(({ id, owner }) => `defer ${id}: ${owner}`),
-  ...shortcuts.map(({ id, reason }) => `shortcut ${id}: ${reason}`),
-  ...checks.map(({ check, reason }) => `check ${check}: ${reason}`),
+const acceptedEntries = ({ skips, deferrals, shortcuts, checks }: Acceptances): AcceptedEntry[] => [
+  ...skips.map(({ id, reason }) => ({ kind: "skip" as const, id, reason })),
+  ...deferrals.map(({ id, owner }) => ({ kind: "defer" as const, id, reason: owner })),
+  ...shortcuts.map(({ id, reason }) => ({ kind: "shortcut" as const, id, reason })),
+  ...checks.map(({ check, reason }) => ({ kind: "waiver" as const, id: check, reason })),
 ];
 
-export function readWaivedCell(
-  cell: string
-): { readonly kind: AcceptedKind; readonly id: string; readonly reason: string }[] {
+/**
+ * A run log's waived cell as entries. Rows before the JSON form joined `<box>: <reason>` and
+ * `check <check>: <reason>` with "; ", which a reason can hold too, so those split only where an entry starts.
+ */
+export function readWaivedCell(cell: string): readonly AcceptedEntry[] {
   if (cell.trim() === "") return [];
-  return cell
-    .split(/; (?=(?:(?:check|defer|shortcut|skip) \S+|[a-z]+(?:-\d+)?): )/)
-    .map((entry) => {
-      const match = /^(?:(check|defer|shortcut|skip) )?([^:\s]+): ([\s\S]*)$/.exec(entry);
-      if (match === null) return { kind: "skip" as const, id: "", reason: entry };
-      const kind: AcceptedKind =
-        match[1] === "check" ? "waiver" : ((match[1] ?? "skip") as AcceptedKind);
-      return { kind, id: match[2], reason: match[3] };
-    });
+  if (cell.startsWith("[")) return JSON.parse(cell) as AcceptedEntry[];
+  return cell.split(/; (?=(?:check [a-z]+|[a-z]+(?:-\d+)?): )/).map((entry) => {
+    const match = /^(check )?([^:\s]+): ([\s\S]*)$/.exec(entry);
+    if (match === null) return { kind: "skip", id: "", reason: entry };
+    return { kind: match[1] === undefined ? "skip" : "waiver", id: match[2], reason: match[3] };
+  });
 }
 
 function parseArgs(argv: readonly string[], runtime: Runtime): Options {
@@ -319,7 +323,7 @@ function appendRun(runtime: Runtime, run: RunRecord): void {
     run.mode,
     run.outcome,
     run.missing.join("; "),
-    run.accepted.join("; "),
+    run.accepted.length === 0 ? "" : JSON.stringify(run.accepted),
   ];
   appendFileSync(file, `${row.map(cell).join("\t")}\n`);
 }
@@ -345,7 +349,7 @@ async function decide(options: Options, runtime: Runtime): Promise<Decision> {
     pr: String(options.pr),
     head: "",
     mode,
-    accepted: acceptedCells(options.accepted),
+    accepted: acceptedEntries(options.accepted),
   };
   const readFailed = (error: unknown, run = base): Decision => {
     const detail = message(error);
