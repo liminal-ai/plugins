@@ -212,7 +212,7 @@ test("sizes the live lanes to the PR, numbered 1 to n with no gap", () => {
 
 test("takes any evidence file a lane names and flags a lane with no evidence or no pass predicate", () => {
 	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Save `lane-2.txt`. Pass when evidence exists."), 0).stderr).toBe("");
-	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Pass when evidence exists."), 1).stderr).toContain("lane 2 saves no evidence");
+	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Pass when evidence exists."), 1).stderr).toContain("lane 2 names no evidence file");
 	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Save `lane-2.txt`."), 1).stderr).toContain("lane 2 has no pass predicate");
 });
 
