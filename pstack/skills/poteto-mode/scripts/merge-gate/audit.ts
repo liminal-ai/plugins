@@ -144,13 +144,9 @@ function readTable(
 const readLog = (path: string, missingOk: boolean) =>
   readTable(path, "the run log", ["repo", "pr", "head", "outcome"], missingOk);
 
-function oldestUnresolvedGap(
-  dir: string,
-  repos: ReadonlySet<string>,
-  historical: ReadonlyMap<string, string>
-): { readonly date: string; readonly key: string } | null {
-  if (!existsSync(dir)) return null;
+function readEarlierAudits(dir: string): Map<string, Record<string, string>> {
   const latest = new Map<string, Record<string, string>>();
+  if (!existsSync(dir)) return latest;
   const runs = readdirSync(dir).flatMap((name) => {
     const match = /^(\d{4}-\d{2}-\d{2}-\d+)(?:-(\d+))?\.tsv$/.exec(name);
     return match === null ? [] : [{ name, stamp: match[1], n: Number(match[2] ?? 1) }];
@@ -164,6 +160,14 @@ function oldestUnresolvedGap(
       false
     ))
       latest.set(receiptKey(row.repo, row.pr, row.head), row);
+  return latest;
+}
+
+function oldestUnresolvedGap(
+  latest: ReadonlyMap<string, Record<string, string>>,
+  repos: ReadonlySet<string>,
+  historical: ReadonlyMap<string, string>
+): { readonly date: string; readonly key: string } | null {
   let held: { date: string; key: string } | null = null;
   for (const [key, row] of latest) {
     const status: Status =
@@ -208,6 +212,7 @@ export async function audit(
   const dir = join(runtime.store, "merge-gate", "audit");
   let since = options.since;
   let heldBy: string | null = null;
+  let earlier = new Map<string, Record<string, string>>();
   const results: {
     readonly repo: string;
     readonly merges: readonly (MergedPull & {
@@ -239,8 +244,9 @@ export async function audit(
             }
           });
     const names = repos.map((repo) => `${repo.owner}/${repo.repo}`);
+    earlier = readEarlierAudits(dir);
     const held = oldestUnresolvedGap(
-      dir,
+      earlier,
       new Set(names.map((name) => name.toLowerCase())),
       options.historical
     );
@@ -277,8 +283,29 @@ export async function audit(
   }
 
   const all = results.flatMap(({ repo, merges }) => merges.map((pull) => ({ repo, ...pull })));
-  const gaps = (status: Status) => all.filter((pull) => pull.status === status);
-  const rowOf = (pull: (typeof all)[number]) => [
+  const audited = new Set(results.map(({ repo }) => repo.toLowerCase()));
+  const seen = new Set(all.map((pull) => pull.key));
+  // A gap settled outside the window still gets its row, so the next audit reads it as historical.
+  const settled = [...options.historical].flatMap(([key, note]) => {
+    const repo = key.slice(0, key.indexOf("#"));
+    if (!audited.has(repo) || seen.has(key)) return [];
+    const prior = earlier.get(key);
+    return [
+      {
+        repo: prior?.repo ?? repo,
+        number: Number(key.slice(key.indexOf("#") + 1, key.indexOf("@"))),
+        head: key.slice(key.indexOf("@") + 1),
+        mergedAt: prior?.merged_at ?? "",
+        mergedBy: prior?.merged_by || null,
+        key,
+        status: "historical" as const,
+        note,
+      },
+    ];
+  });
+  const reported = [...all, ...settled];
+  const gaps = (status: Status) => reported.filter((pull) => pull.status === status);
+  const rowOf = (pull: (typeof reported)[number]) => [
     pull.repo,
     `#${pull.number}`,
     pull.mergedAt,
@@ -299,7 +326,7 @@ export async function audit(
     out.push(
       "No repos to audit: this machine's runs.tsv names none. Pass --repo <owner/name>."
     );
-  else if (all.every((pull) => pull.status === "receipted"))
+  else if (reported.every((pull) => pull.status === "receipted"))
     out.push(`Every merge since ${since} has a gate receipt.`);
   else {
     const fresh = gaps("new");
@@ -323,8 +350,6 @@ export async function audit(
         ])
       );
   }
-  const audited = new Set(results.map(({ repo }) => repo.toLowerCase()));
-  const seen = new Set(all.map((pull) => pull.key));
   const unseen = [...options.known].filter(
     (key) => audited.has(key.slice(0, key.indexOf("#"))) && !seen.has(key)
   );
@@ -351,7 +376,7 @@ export async function audit(
   let file = join(dir, `${name}.tsv`);
   const tsv = [
     "repo\tpr\tmerged_at\tmerged_by\thead\treceipt\tgap\tnote",
-    ...all.map((pull) =>
+    ...reported.map((pull) =>
       [
         pull.repo,
         pull.number,

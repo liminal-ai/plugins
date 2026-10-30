@@ -209,6 +209,29 @@ describe("merge-gate audit", () => {
     expect(settled.calls).toEqual(["mergedPullRequests owner/repo 2026-10-10"]);
   });
 
+  it("records a gap settled outside the window, so the next audit without --historical stays released", async () => {
+    const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: {} });
+    const runtime = runtimeFor(github, tmpdir());
+    const dir = join(runtime.store, "merge-gate", "audit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "2026-09-01-060000.tsv"),
+      `repo\tpr\tmerged_at\tmerged_by\thead\treceipt\nowner/repo\t7\t2026-08-20T01:00:00Z\tx\t${B}\tno\n`
+    );
+    expect(await main(["audit", "--repo", "owner/repo", "--historical", `owner/repo#7@${B}=predates the gate`], runtime)).toBe(0);
+    expect(runtime.out()).toContain(
+      `Historical, no gate receipt:\nrepo        PR  merged at             merged by  head${" ".repeat(38)}reason\nowner/repo  #7  2026-08-20T01:00:00Z  x          ${B}  predates the gate\n`
+    );
+    expect(readFileSync(join(dir, "2026-10-17-120000.tsv"), "utf8")).toContain(
+      `owner/repo\t7\t2026-08-20T01:00:00Z\tx\t${B}\tno\thistorical\tpredates the gate\n`
+    );
+    expect(await main(["audit", "--repo", "owner/repo"], runtime)).toBe(0);
+    expect(github.calls).toEqual([
+      "mergedPullRequests owner/repo 2026-10-10",
+      "mergedPullRequests owner/repo 2026-10-10",
+    ]);
+  });
+
   it("reads same-second audit files in the order they were written", async () => {
     const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: {} });
     const runtime = runtimeFor(github, tmpdir());
