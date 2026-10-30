@@ -60,7 +60,7 @@ node scripts/check-t3-port.mjs
 node --test scripts/check-t3-port.test.mjs
 node scripts/check-pstack-docs.mjs
 (cd pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun test)
-(cd pstack/skills/statechart/scripts && npm install --no-package-lock && npm test)   # Node 22.18+; the first run installs TLC and Java with mise
+(cd pstack/skills/statechart/scripts && npm install --no-package-lock && npm test)   # Node 22.18+; the TLC tests skip unless TLA2TOOLS and JAVA name the jar and java that mise installs on the first statechart run
 ```
 
 ## Deploying
