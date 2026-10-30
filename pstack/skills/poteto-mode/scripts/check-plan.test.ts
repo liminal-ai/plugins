@@ -210,6 +210,16 @@ test("sizes the live lanes to the PR, numbered 1 to n with no gap", () => {
 	expect(gap.stderr).toContain("lanes are [1,2,3,5,6,7,8,9,10], expected 1 to 9 with no gap or repeat");
 });
 
+test("takes any evidence file a lane names and flags a lane with no evidence or no pass predicate", () => {
+	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Save `lane-2.txt`. Pass when evidence exists."), 0).stderr).toBe("");
+	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Pass when evidence exists."), 1).stderr).toContain("lane 2 names no evidence file");
+	expect(runText(validPlan.replace(lane(2), "- [ ] Lane 2. Save `lane-2.txt`."), 1).stderr).toContain("lane 2 has no pass predicate");
+});
+
+test("the template leaves the evidence form to the verify skill", () => {
+	expect(skeleton.split("\n").filter((l) => /Lane |lane-<n>/.test(l) && l.includes(".png"))).toEqual([]);
+});
+
 test("requires the live block to name its model and the verify skill that drives it", () => {
 	const unnamed = runText(validPlan.replace(", driven through `verify-example`.", "."), 1);
 	expect(unnamed.stderr).toContain("driven through");
