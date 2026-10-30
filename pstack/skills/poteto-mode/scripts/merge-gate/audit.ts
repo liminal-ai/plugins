@@ -10,9 +10,7 @@ interface AuditOptions {
   readonly repos: readonly Repository[];
   readonly since: string;
   readonly logs: readonly string[];
-  /** Gaps already reported and still unresolved, by receipt key. */
   readonly known: ReadonlySet<string>;
-  /** Gaps settled as never getting a receipt, by receipt key, with the reason. */
   readonly historical: ReadonlyMap<string, string>;
   readonly unreachable: readonly string[];
 }
@@ -21,8 +19,10 @@ interface AuditOptions {
 const receiptKey = (repo: string, pr: string, head: string): string =>
   `${repo.toLowerCase()}#${pr}@${head}`;
 
-/** What the audit makes of one merge. Only new and known gaps are unresolved. */
 type Status = "receipted" | "new" | "known" | "historical";
+
+const unresolved = (status: Status): boolean =>
+  status === "new" || status === "known";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -115,7 +115,6 @@ function parseAuditArgs(
   };
 }
 
-/** The rows of a TSV by its header's column names. A missing file has no rows when missingOk. */
 function readTable(
   path: string,
   what: string,
@@ -145,11 +144,7 @@ function readTable(
 const readLog = (path: string, missingOk: boolean) =>
   readTable(path, "the run log", ["repo", "pr", "head", "outcome"], missingOk);
 
-/**
- * The merge date of the oldest gap in the audited repos that the newest earlier audit file
- * listing it left unresolved, so the window never moves past one.
- */
-function heldSince(
+function oldestUnresolvedMergeDate(
   dir: string,
   repos: ReadonlySet<string>,
   historical: ReadonlyMap<string, string>
@@ -168,11 +163,15 @@ function heldSince(
       latest.set(receiptKey(row.repo, row.pr, row.head), row);
   let held: string | null = null;
   for (const [key, row] of latest) {
-    const unresolved =
-      row.receipt === "no" && row.gap !== "historical" && !historical.has(key);
+    const status: Status =
+      row.receipt === "yes"
+        ? "receipted"
+        : historical.has(key) || row.gap === "historical"
+          ? "historical"
+          : "new";
     const date = row.merged_at.slice(0, 10);
     if (
-      unresolved &&
+      unresolved(status) &&
       repos.has(row.repo.toLowerCase()) &&
       (held === null || date < held)
     )
@@ -236,7 +235,7 @@ export async function audit(
             }
           });
     const names = repos.map((repo) => `${repo.owner}/${repo.repo}`);
-    const held = heldSince(
+    const held = oldestUnresolvedMergeDate(
       dir,
       new Set(names.map((name) => name.toLowerCase())),
       options.historical
@@ -375,5 +374,5 @@ export async function audit(
   }
   out.push(`Wrote ${file}`);
   runtime.stdout(`${out.join("\n")}\n`);
-  return all.some((pull) => pull.status === "new" || pull.status === "known") ? 1 : 0;
+  return all.some((pull) => unresolved(pull.status)) ? 1 : 0;
 }
