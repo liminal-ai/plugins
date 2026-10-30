@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import type { Repository } from "../watch-pr/types.ts";
@@ -10,11 +10,19 @@ interface AuditOptions {
   readonly repos: readonly Repository[];
   readonly since: string;
   readonly logs: readonly string[];
+  /** Gaps already reported and still unresolved, by receipt key. */
+  readonly known: ReadonlySet<string>;
+  /** Gaps settled as never getting a receipt, by receipt key, with the reason. */
+  readonly historical: ReadonlyMap<string, string>;
+  readonly unreachable: readonly string[];
 }
 
 /** One gate run log row's identity, for matching a merge to the run that made it. */
 const receiptKey = (repo: string, pr: string, head: string): string =>
   `${repo.toLowerCase()}#${pr}@${head}`;
+
+/** What the audit makes of one merge. Only new and known gaps are unresolved. */
+type Status = "receipted" | "new" | "known" | "historical";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -24,13 +32,23 @@ function parseSince(value: string): string {
   return value;
 }
 
+function parseGap(value: string): { key: string; reason: string | undefined } {
+  const match = /^([\w.-]+\/[\w.-]+)#([1-9]\d*)@([0-9a-f]{40})(?:=([\s\S]*))?$/.exec(value);
+  if (match === null)
+    throw new InvalidArgumentError("must be <owner/name>#<pr>@<full head sha>");
+  return {
+    key: receiptKey(match[1], match[2], match[3]),
+    reason: match[4]?.replace(/\s+/g, " ").trim(),
+  };
+}
+
 function parseAuditArgs(
   argv: readonly string[],
   runtime: Runtime
 ): AuditOptions {
   const program = new Command("merge-gate audit")
     .description(
-      "List PRs merged without a gate receipt: a runs.tsv row with the same repo, PR and head whose outcome is merged.\nRead-only on GitHub. Writes the result to its own file, <store>/merge-gate/audit/<YYYY-MM-DD>-<HHMMSS>.tsv (UTC).\nExit 0 every merge has a receipt, 1 any lacks one, 2 usage or read error."
+      "List PRs merged without a gate receipt: a runs.tsv row with the same repo, PR and head whose outcome is merged.\nA gap is new unless --known or --historical names it. The window reaches back to the oldest new or known gap an earlier audit file left without a receipt, whatever --since says.\nRead-only on GitHub. Writes the result to its own file, <store>/merge-gate/audit/<YYYY-MM-DD>-<HHMMSS>.tsv (UTC).\nExit 0 every merge has a receipt or is historical, 1 any new or known gap, 2 usage or read error."
     )
     .configureOutput({ writeOut: runtime.stdout, writeErr: runtime.stderr })
     .exitOverride()
@@ -53,12 +71,37 @@ function parseAuditArgs(
       "another gate run log to take receipts from, such as another machine's; repeatable",
       (value: string, previous: readonly string[]) => [...previous, value],
       []
+    )
+    .option(
+      "--known <owner/name#pr@head>",
+      "a gap already reported and still unresolved, listed apart from new ones; repeatable",
+      (value: string, previous: readonly string[]) => [...previous, parseGap(value).key],
+      []
+    )
+    .option(
+      "--historical <owner/name#pr@head=reason>",
+      "a gap settled as never getting a receipt; listed as historical, never as receipted; repeatable",
+      (value: string, previous: readonly [string, string][]): [string, string][] => {
+        const { key, reason } = parseGap(value);
+        if (!reason) throw new InvalidArgumentError("needs =<reason> after the head");
+        return [...previous, [key, reason]];
+      },
+      []
+    )
+    .option(
+      "--unreachable <host>",
+      "a host whose run log could not be read, named next to the result; repeatable",
+      (value: string, previous: readonly string[]) => [...previous, value],
+      []
     );
   program.parse(argv, { from: "user" });
   const raw = program.opts<{
     repo: Repository[];
     since?: string;
     log: string[];
+    known: string[];
+    historical: [string, string][];
+    unreachable: string[];
   }>();
   return {
     repos: raw.repo,
@@ -66,29 +109,86 @@ function parseAuditArgs(
       raw.since ??
       new Date(runtime.now().getTime() - 7 * DAY_MS).toISOString().slice(0, 10),
     logs: raw.log,
+    known: new Set(raw.known),
+    historical: new Map(raw.historical),
+    unreachable: raw.unreachable,
   };
 }
 
-/** The rows of a run log by its header's column names. A missing local log has no rows. */
-function readLog(path: string, missingOk: boolean): Record<string, string>[] {
+/** The rows of a TSV by its header's column names. A missing file has no rows when missingOk. */
+function readTable(
+  path: string,
+  what: string,
+  columns: readonly string[],
+  missingOk: boolean
+): Record<string, string>[] {
   if (missingOk && !existsSync(path)) return [];
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
     throw new ReadError(
-      `the run log ${path} could not be read: ${error instanceof Error ? error.message : String(error)}`
+      `${what} ${path} could not be read: ${error instanceof Error ? error.message : String(error)}`
     );
   }
   const [header, ...rows] = text.split("\n").filter((line) => line !== "");
   const names = header?.split("\t") ?? [];
-  for (const name of ["repo", "pr", "head", "outcome"])
+  for (const name of columns)
     if (!names.includes(name))
-      throw new ReadError(`the run log ${path} has no ${name} column`);
+      throw new ReadError(`${what} ${path} has no ${name} column`);
   return rows.map((row) => {
     const cells = row.split("\t");
     return Object.fromEntries(names.map((name, i) => [name, cells[i] ?? ""]));
   });
+}
+
+const readLog = (path: string, missingOk: boolean) =>
+  readTable(path, "the run log", ["repo", "pr", "head", "outcome"], missingOk);
+
+/**
+ * The merge date of the oldest gap in the audited repos that the newest earlier audit file
+ * listing it left unresolved, so the window never moves past one.
+ */
+function heldSince(
+  dir: string,
+  repos: ReadonlySet<string>,
+  historical: ReadonlyMap<string, string>
+): string | null {
+  if (!existsSync(dir)) return null;
+  const latest = new Map<string, Record<string, string>>();
+  for (const name of readdirSync(dir)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}-\d+(-\d+)?\.tsv$/.test(name))
+    .sort())
+    for (const row of readTable(
+      join(dir, name),
+      "the earlier audit",
+      ["repo", "pr", "merged_at", "head", "receipt"],
+      false
+    ))
+      latest.set(receiptKey(row.repo, row.pr, row.head), row);
+  let held: string | null = null;
+  for (const [key, row] of latest) {
+    const unresolved =
+      row.receipt === "no" && row.gap !== "historical" && !historical.has(key);
+    const date = row.merged_at.slice(0, 10);
+    if (
+      unresolved &&
+      repos.has(row.repo.toLowerCase()) &&
+      (held === null || date < held)
+    )
+      held = date;
+  }
+  return held;
+}
+
+function table(rows: readonly (readonly string[])[]): string[] {
+  const widths = rows[0].map((_, i) => Math.max(...rows.map((row) => row[i].length)));
+  return rows.map((row) =>
+    row
+      .map((cell, i) => cell.padEnd(widths[i]))
+      .join("  ")
+      .trimEnd()
+  );
 }
 
 export async function audit(
@@ -103,10 +203,15 @@ export async function audit(
     return error.exitCode === 0 ? 0 : EXIT.error;
   }
 
+  const dir = join(runtime.store, "merge-gate", "audit");
+  let since = options.since;
   const results: {
     readonly repo: string;
-    readonly merges: readonly MergedPull[];
-    readonly without: readonly MergedPull[];
+    readonly merges: readonly (MergedPull & {
+      readonly key: string;
+      readonly status: Status;
+      readonly note: string;
+    })[];
   }[] = [];
   try {
     const local = readLog(runLog(runtime.store), true);
@@ -130,19 +235,29 @@ export async function audit(
               return [];
             }
           });
-    for (const repo of repos) {
-      const name = `${repo.owner}/${repo.repo}`;
-      const merges = await runtime.github.mergedPullRequests(
-        repo,
-        options.since
-      );
+    const names = repos.map((repo) => `${repo.owner}/${repo.repo}`);
+    const held = heldSince(
+      dir,
+      new Set(names.map((name) => name.toLowerCase())),
+      options.historical
+    );
+    if (held !== null && held < since) since = held;
+    for (const [i, repo] of repos.entries()) {
+      const name = names[i];
+      const merges = await runtime.github.mergedPullRequests(repo, since);
       results.push({
         repo: name,
-        merges,
-        without: merges.filter(
-          (pull) =>
-            !receipts.has(receiptKey(name, String(pull.number), pull.head))
-        ),
+        merges: merges.map((pull) => {
+          const key = receiptKey(name, String(pull.number), pull.head);
+          const status: Status = receipts.has(key)
+            ? "receipted"
+            : options.historical.has(key)
+              ? "historical"
+              : options.known.has(key)
+                ? "known"
+                : "new";
+          return { ...pull, key, status, note: options.historical.get(key) ?? "" };
+        }),
       });
     }
   } catch (error) {
@@ -152,64 +267,92 @@ export async function audit(
     return EXIT.error;
   }
 
-  const without = results.flatMap(({ repo, without }) =>
-    without.map((pull) => ({ repo, ...pull }))
-  );
+  const all = results.flatMap(({ repo, merges }) => merges.map((pull) => ({ repo, ...pull })));
+  const gaps = (status: Status) => all.filter((pull) => pull.status === status);
+  const rowOf = (pull: (typeof all)[number]) => [
+    pull.repo,
+    `#${pull.number}`,
+    pull.mergedAt,
+    pull.mergedBy ?? "(unknown)",
+    pull.head,
+  ];
+  const columns = ["repo", "PR", "merged at", "merged by", "head"];
   const out: string[] = [];
+  if (options.unreachable.length > 0)
+    out.push(
+      `Unreachable, receipts not read: ${options.unreachable.join(", ")}. A merge gated there shows below as a gap.`
+    );
+  if (since !== options.since)
+    out.push(
+      `The window starts ${since}, not ${options.since}, to keep the gaps an earlier audit left unresolved.`
+    );
   if (results.length === 0)
     out.push(
       "No repos to audit: this machine's runs.tsv names none. Pass --repo <owner/name>."
     );
-  else if (without.length === 0)
-    out.push(`Every merge since ${options.since} has a gate receipt.`);
+  else if (all.every((pull) => pull.status === "receipted"))
+    out.push(`Every merge since ${since} has a gate receipt.`);
   else {
-    const table = [
-      ["repo", "PR", "merged at", "merged by", "head"],
-      ...without.map((pull) => [
-        pull.repo,
-        `#${pull.number}`,
-        pull.mergedAt,
-        pull.mergedBy ?? "(unknown)",
-        pull.head,
-      ]),
-    ];
-    const widths = table[0].map((_, i) =>
-      Math.max(...table.map((row) => row[i].length))
-    );
-    out.push(`Merges since ${options.since} with no gate receipt:`);
-    for (const row of table)
+    const fresh = gaps("new");
+    if (fresh.length === 0)
+      out.push(`No new merge without a gate receipt since ${since}.`);
+    else
       out.push(
-        row
-          .map((cell, i) => cell.padEnd(widths[i]))
-          .join("  ")
-          .trimEnd()
+        `New merges since ${since} with no gate receipt:`,
+        ...table([columns, ...fresh.map(rowOf)])
+      );
+    const known = gaps("known");
+    if (known.length > 0)
+      out.push("Known gaps, still with no gate receipt:", ...table([columns, ...known.map(rowOf)]));
+    const historical = gaps("historical");
+    if (historical.length > 0)
+      out.push(
+        "Historical, no gate receipt:",
+        ...table([
+          [...columns, "reason"],
+          ...historical.map((pull) => [...rowOf(pull), pull.note]),
+        ])
       );
   }
-  out.push("");
-  for (const { repo, merges, without: missing } of results) {
-    const receipted = merges.length - missing.length;
+  const audited = new Set(results.map(({ repo }) => repo.toLowerCase()));
+  const seen = new Set(all.map((pull) => pull.key));
+  const unseen = [...options.known].filter(
+    (key) => audited.has(key.slice(0, key.indexOf("#"))) && !seen.has(key)
+  );
+  if (unseen.length > 0)
     out.push(
-      `${repo}: ${merges.length} merge${merges.length === 1 ? "" : "s"}, ${receipted} receipt${receipted === 1 ? "" : "s"}, ${missing.length} without`
+      `Known gaps not among the merges since ${since} (a wrong PR or head, or an older merge):`,
+      ...unseen.map((key) => `  ${key}`)
+    );
+  out.push("");
+  for (const { repo, merges } of results) {
+    const count = (status: Status) => merges.filter((pull) => pull.status === status).length;
+    const receipted = count("receipted");
+    const without = merges.length - receipted;
+    out.push(
+      `${repo}: ${merges.length} merge${merges.length === 1 ? "" : "s"}, ${receipted} receipt${receipted === 1 ? "" : "s"}, ${without} without` +
+        (without === 0
+          ? ""
+          : ` (${count("new")} new, ${count("known")} known, ${count("historical")} historical)`)
     );
   }
 
   const stamp = runtime.now().toISOString();
   const name = `${stamp.slice(0, 10)}-${stamp.slice(11, 13)}${stamp.slice(14, 16)}${stamp.slice(17, 19)}`;
-  const dir = join(runtime.store, "merge-gate", "audit");
   let file = join(dir, `${name}.tsv`);
   const tsv = [
-    "repo\tpr\tmerged_at\tmerged_by\thead\treceipt",
-    ...results.flatMap(({ repo, merges, without: missing }) =>
-      merges.map((pull) =>
-        [
-          repo,
-          pull.number,
-          pull.mergedAt,
-          pull.mergedBy ?? "",
-          pull.head,
-          missing.includes(pull) ? "no" : "yes",
-        ].join("\t")
-      )
+    "repo\tpr\tmerged_at\tmerged_by\thead\treceipt\tgap\tnote",
+    ...all.map((pull) =>
+      [
+        pull.repo,
+        pull.number,
+        pull.mergedAt,
+        pull.mergedBy ?? "",
+        pull.head,
+        pull.status === "receipted" ? "yes" : "no",
+        pull.status === "receipted" ? "" : pull.status,
+        pull.note,
+      ].join("\t")
     ),
   ];
   try {
@@ -232,5 +375,5 @@ export async function audit(
   }
   out.push(`Wrote ${file}`);
   runtime.stdout(`${out.join("\n")}\n`);
-  return without.length === 0 ? 0 : 1;
+  return all.some((pull) => pull.status === "new" || pull.status === "known") ? 1 : 0;
 }
