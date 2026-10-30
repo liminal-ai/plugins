@@ -232,6 +232,30 @@ describe("merge-gate audit", () => {
     ]);
   });
 
+  it("keeps a merge an earlier audit recorded as historical, unless it now has a receipt", async () => {
+    const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: { "owner/repo": [pull(2, B), pull(3, C)] } });
+    const runtime = runtimeFor(github, tmpdir());
+    const dir = join(runtime.store, "merge-gate", "audit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "2026-10-16-060000.tsv"),
+      [
+        "repo\tpr\tmerged_at\tmerged_by\thead\treceipt\tgap\tnote",
+        `owner/repo\t2\t2026-10-12T01:00:00Z\tleegmoore\t${B}\tno\thistorical\tpredates the gate`,
+        `owner/repo\t3\t2026-10-13T01:00:00Z\tleegmoore\t${C}\tno\thistorical\tpredates the gate`,
+        "",
+      ].join("\n")
+    );
+    mkdirSync(join(runtime.store, "merge-gate"), { recursive: true });
+    writeFileSync(join(runtime.store, "merge-gate", "runs.tsv"), `${HEADER}\n${row("owner/repo", 3, C)}\n`);
+    expect(await main(["audit", "--repo", "owner/repo"], runtime)).toBe(0);
+    expect(runtime.out()).toContain("owner/repo: 2 merges, 1 receipt, 1 without (0 new, 0 known, 1 historical)\n");
+    expect(readFileSync(join(dir, "2026-10-17-120000.tsv"), "utf8").split("\n").slice(1, 3)).toEqual([
+      `owner/repo\t2\t2026-10-12T01:00:00Z\tleegmoore\t${B}\tno\thistorical\tpredates the gate`,
+      `owner/repo\t3\t2026-10-13T01:00:00Z\tleegmoore\t${C}\tyes\t\t`,
+    ]);
+  });
+
   it("reads same-second audit files in the order they were written", async () => {
     const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: {} });
     const runtime = runtimeFor(github, tmpdir());

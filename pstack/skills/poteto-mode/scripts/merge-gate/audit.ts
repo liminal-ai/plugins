@@ -173,7 +173,7 @@ function oldestUnresolvedGap(
     const status: Status =
       row.receipt === "yes"
         ? "receipted"
-        : historical.has(key) || row.gap === "historical"
+        : historical.has(key)
           ? "historical"
           : "new";
     const date = row.merged_at.slice(0, 10);
@@ -245,10 +245,16 @@ export async function audit(
           });
     const names = repos.map((repo) => `${repo.owner}/${repo.repo}`);
     earlier = readEarlierAudits(dir);
+    const historical = new Map([
+      ...[...earlier].flatMap(([key, row]): [string, string][] =>
+        row.gap === "historical" ? [[key, row.note ?? ""]] : []
+      ),
+      ...options.historical,
+    ]);
     const held = oldestUnresolvedGap(
       earlier,
       new Set(names.map((name) => name.toLowerCase())),
-      options.historical
+      historical
     );
     if (held !== null && held.date < since) {
       since = held.date;
@@ -263,12 +269,13 @@ export async function audit(
           const key = receiptKey(name, String(pull.number), pull.head);
           const status: Status = receipts.has(key)
             ? "receipted"
-            : options.historical.has(key)
+            : historical.has(key)
               ? "historical"
               : options.known.has(key)
                 ? "known"
                 : "new";
-          return { ...pull, key, status, note: options.historical.get(key) ?? "" };
+          const note = status === "historical" ? (historical.get(key) ?? "") : "";
+          return { ...pull, key, status, note };
         }),
       });
     }
