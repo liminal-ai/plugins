@@ -223,6 +223,21 @@ describe("merge-gate audit", () => {
     expect(github.calls).toEqual(["mergedPullRequests owner/repo 2026-10-10"]);
   });
 
+  it("names the gap holding the window when the read fails, and how to release it", async () => {
+    const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: {}, failOn: "mergedPullRequests" });
+    const runtime = runtimeFor(github, tmpdir());
+    const dir = join(runtime.store, "merge-gate", "audit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "2026-09-01-060000.tsv"),
+      `repo\tpr\tmerged_at\tmerged_by\thead\treceipt\nOwner/Repo\t7\t2026-08-20T01:00:00Z\tx\t${B}\tno\n`
+    );
+    expect(await main(["audit", "--repo", "owner/repo"], runtime)).toBe(2);
+    expect(runtime.out()).toEndWith(
+      `The window starts 2026-08-20 for the unresolved gap owner/repo#7@${B}. To release it, settle the gap with --historical owner/repo#7@${B}=<reason>.\n`
+    );
+  });
+
   it("names unreachable hosts first", async () => {
     const result = await runAudit([row("owner/repo", 1, A)], { "owner/repo": [pull(1, A)] }, [
       "--unreachable",

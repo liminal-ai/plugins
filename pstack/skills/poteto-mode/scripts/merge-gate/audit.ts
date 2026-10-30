@@ -144,11 +144,11 @@ function readTable(
 const readLog = (path: string, missingOk: boolean) =>
   readTable(path, "the run log", ["repo", "pr", "head", "outcome"], missingOk);
 
-function oldestUnresolvedMergeDate(
+function oldestUnresolvedGap(
   dir: string,
   repos: ReadonlySet<string>,
   historical: ReadonlyMap<string, string>
-): string | null {
+): { readonly date: string; readonly key: string } | null {
   if (!existsSync(dir)) return null;
   const latest = new Map<string, Record<string, string>>();
   const runs = readdirSync(dir).flatMap((name) => {
@@ -164,7 +164,7 @@ function oldestUnresolvedMergeDate(
       false
     ))
       latest.set(receiptKey(row.repo, row.pr, row.head), row);
-  let held: string | null = null;
+  let held: { date: string; key: string } | null = null;
   for (const [key, row] of latest) {
     const status: Status =
       row.receipt === "yes"
@@ -176,9 +176,9 @@ function oldestUnresolvedMergeDate(
     if (
       unresolved(status) &&
       repos.has(row.repo.toLowerCase()) &&
-      (held === null || date < held)
+      (held === null || date < held.date)
     )
-      held = date;
+      held = { date, key };
   }
   return held;
 }
@@ -207,6 +207,7 @@ export async function audit(
 
   const dir = join(runtime.store, "merge-gate", "audit");
   let since = options.since;
+  let heldBy: string | null = null;
   const results: {
     readonly repo: string;
     readonly merges: readonly (MergedPull & {
@@ -238,12 +239,15 @@ export async function audit(
             }
           });
     const names = repos.map((repo) => `${repo.owner}/${repo.repo}`);
-    const held = oldestUnresolvedMergeDate(
+    const held = oldestUnresolvedGap(
       dir,
       new Set(names.map((name) => name.toLowerCase())),
       options.historical
     );
-    if (held !== null && held < since) since = held;
+    if (held !== null && held.date < since) {
+      since = held.date;
+      heldBy = held.key;
+    }
     for (const [i, repo] of repos.entries()) {
       const name = names[i];
       const merges = await runtime.github.mergedPullRequests(repo, since);
@@ -264,7 +268,10 @@ export async function audit(
     }
   } catch (error) {
     runtime.stdout(
-      `ERROR: the merge audit could not read everything it needs: ${message(error)}\n`
+      `ERROR: the merge audit could not read everything it needs: ${message(error)}\n` +
+        (heldBy === null
+          ? ""
+          : `The window starts ${since} for the unresolved gap ${heldBy}. To release it, settle the gap with --historical ${heldBy}=<reason>.\n`)
     );
     return EXIT.error;
   }
