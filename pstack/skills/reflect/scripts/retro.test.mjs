@@ -538,6 +538,15 @@ test("a thread an agent created, with an mcp: id, registers and reflects", (t) =
   assert.match(run(["register", "thread:other-kind:x"]).err, /needs a T3 thread id/);
 });
 
+test("a thread launched with a clientRequestId, with an mcp:launch: id, registers and reflects", (t) => {
+  const { run, reflect } = sandbox(t);
+  const id = "mcp:launch:e22d9ceca003a06489fc02a4879b12ac02ee7318a7b2f5b312a6c5fc6569814a";
+  reflect(id);
+  assert.match(run(["status"]).out, /\[e22d9cec\]\(t3-thread:\/\/v1\/mcp:launch:e22d9cec/);
+  assert.match(run(["register", `${id}0`]).err, /needs a T3 thread id/);
+  assert.match(run(["register", "mcp:launch:../../etc"]).err, /needs a T3 thread id/);
+});
+
 test("backlog gathers each waiting reflect's backlog under its thread", (t) => {
   const { run, reflect } = sandbox(t);
   run(["register", A, "--title", "first"]);
