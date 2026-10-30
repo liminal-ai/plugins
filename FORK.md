@@ -65,7 +65,7 @@ node scripts/check-pstack-docs.mjs
 
 ## Deploying
 
-Installs are copies, so a merge changes nothing until a reinstall. Only the hourly audit ticks in autopilot-full, autopilot-stack and multi-phase-plan re-read playbooks from `origin/lim` (`check-plan.mjs` requires plans to include that re-read), so a merge without a reinstall splits running programs between new playbooks and old skills and scripts. Merge through the merge gate (`merge-gate --repo liminal-ai/pstack-lim --pr <n>`, per poteto-mode's Shipping playbook), then reinstall at once for each user with the install steps in `poteto-help` (rsync `pstack/skills/*` into `~/.agents/skills`, link `~/.claude/skills/<name>`, copy `pstack/agents`). Verify: `diff -r pstack/skills/<name> ~/.agents/skills/<name>`.
+Installs are copies, so a merge changes nothing until a reinstall. Only the hourly audit ticks in autopilot-full, autopilot-stack and multi-phase-plan re-read playbooks from `origin/lim` (`check-plan.mjs` requires plans to include that re-read), so a merge without a reinstall splits running programs between new playbooks and old skills and scripts. Merge through the merge gate (`merge-gate --repo liminal-ai/pstack-lim --pr <n>`, per poteto-mode's Shipping playbook), then reinstall at once on every box: move `PSTACK_LIM_COMMIT` in `~/lim-v2/manifest.env`, run `~/lim-v2/bin/lim-setup` on lim-builder, then `bin/lim-fleet` (steps in `.agents/merge-brief.md`). Verify: `bin/lim-fleet --check`.
 
 ## bun
 
