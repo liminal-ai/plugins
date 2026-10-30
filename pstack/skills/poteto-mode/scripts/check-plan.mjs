@@ -132,7 +132,7 @@ for (const pr of prSections) {
 		else if (numbers.join(",") !== expected) fail(live.n, `${pr.title}: lanes are [${numbers.join(",")}], expected 1 to ${numbers.length} with no gap or repeat`);
 		for (const lane of lanes) {
 			if (!lane.m) fail(lane.n, `${pr.title}: live box is not a lane`);
-			else if (!/Save `[^`]+`/.test(lane.text)) fail(lane.n, `${pr.title}: lane ${lane.m[1]} names no screenshot`);
+			else if (!/Save `[^`]+`/.test(lane.text)) fail(lane.n, `${pr.title}: lane ${lane.m[1]} saves no evidence. Write Save \`<file>\`, the evidence the verify skill names`);
 			else if (!lane.text.includes("Pass when")) fail(lane.n, `${pr.title}: lane ${lane.m[1]} has no pass predicate`);
 		}
 	}
