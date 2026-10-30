@@ -151,9 +151,12 @@ function oldestUnresolvedMergeDate(
 ): string | null {
   if (!existsSync(dir)) return null;
   const latest = new Map<string, Record<string, string>>();
-  for (const name of readdirSync(dir)
-    .filter((name) => /^\d{4}-\d{2}-\d{2}-\d+(-\d+)?\.tsv$/.test(name))
-    .sort())
+  const runs = readdirSync(dir).flatMap((name) => {
+    const match = /^(\d{4}-\d{2}-\d{2}-\d+)(?:-(\d+))?\.tsv$/.exec(name);
+    return match === null ? [] : [{ name, stamp: match[1], n: Number(match[2] ?? 1) }];
+  });
+  runs.sort((a, b) => (a.stamp === b.stamp ? a.n - b.n : a.stamp < b.stamp ? -1 : 1));
+  for (const { name } of runs)
     for (const row of readTable(
       join(dir, name),
       "the earlier audit",

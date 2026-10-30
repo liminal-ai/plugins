@@ -209,6 +209,20 @@ describe("merge-gate audit", () => {
     expect(settled.calls).toEqual(["mergedPullRequests owner/repo 2026-10-10"]);
   });
 
+  it("reads same-second audit files in the order they were written", async () => {
+    const github = fakeGitHub({ pull: { headRefOid: A }, mergedPulls: {} });
+    const runtime = runtimeFor(github, tmpdir());
+    const dir = join(runtime.store, "merge-gate", "audit");
+    mkdirSync(dir, { recursive: true });
+    const header = "repo\tpr\tmerged_at\tmerged_by\thead\treceipt";
+    const gap = (receipt: string) => `${header}\nowner/repo\t7\t2026-08-20T01:00:00Z\tx\t${B}\t${receipt}\n`;
+    writeFileSync(join(dir, "2026-09-01-060000.tsv"), gap("no"));
+    writeFileSync(join(dir, "2026-09-01-060000-2.tsv"), gap("no"));
+    writeFileSync(join(dir, "2026-09-01-060000-10.tsv"), gap("yes"));
+    await main(["audit", "--repo", "owner/repo"], runtime);
+    expect(github.calls).toEqual(["mergedPullRequests owner/repo 2026-10-10"]);
+  });
+
   it("names unreachable hosts first", async () => {
     const result = await runAudit([row("owner/repo", 1, A)], { "owner/repo": [pull(1, A)] }, [
       "--unreachable",
