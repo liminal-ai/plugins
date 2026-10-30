@@ -192,12 +192,12 @@ function within(path, dir) {
 
 const storedPath = (path) => (within(path, RETRO) ? relative(RETRO, path) : path);
 
+const RETRO_FROM_HOME = within(RETRO, homedir()) && `${sep}${relative(homedir(), RETRO)}${sep}`;
+
 function pathFromAnyStore(path) {
   if (!isAbsolute(path)) return join(RETRO, path);
-  if (within(path, RETRO)) return path;
-  const parts = path.split(sep);
-  const at = parts.findIndex((p, i) => p === "retro" && parts[i + 1] && existsSync(join(RETRO, parts[i + 1])));
-  return at === -1 ? path : join(RETRO, ...parts.slice(at + 1));
+  const at = RETRO_FROM_HOME && !within(path, RETRO) ? path.indexOf(RETRO_FROM_HOME) : -1;
+  return at === -1 ? path : join(RETRO, path.slice(at + RETRO_FROM_HOME.length));
 }
 
 const RECORD_PATHS = {

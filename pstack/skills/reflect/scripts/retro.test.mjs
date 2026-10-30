@@ -11,14 +11,16 @@ const A = "aaaaaaaa-0000-4000-8000-000000000001";
 const B = "bbbbbbbb-0000-4000-8000-000000000002";
 const C = "cccccccc-0000-4000-8000-000000000003";
 
-function sandbox(t) {
-  const store = mkdtempSync(join(tmpdir(), "retro-store-"));
-  t.after(() => rmSync(store, { recursive: true, force: true }));
+function sandbox(t, { underHome = false } = {}) {
+  const base = mkdtempSync(join(tmpdir(), "retro-store-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const store = underHome ? join(base, ".local", "state", "pstack") : base;
+  mkdirSync(store, { recursive: true });
   // A gitleaks that finds nothing, so the backup can push; the script's own patterns still scan.
   const scanner = scratchDir(t);
   writeFileSync(join(scanner, "gitleaks"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const env = (nowIso, extra = {}) => {
-    const e = { ...process.env, PSTACK_STORE: store, PATH: `${scanner}:${process.env.PATH}`, ...extra };
+    const e = { ...process.env, PSTACK_STORE: store, PATH: `${scanner}:${process.env.PATH}`, ...(underHome && { HOME: base }), ...extra };
     if (nowIso) e.RETRO_NOW = nowIso;
     else delete e.RETRO_NOW;
     return e;
@@ -912,7 +914,7 @@ function absolutize(file, retro) {
 }
 
 test("paths inside the retro folder are stored relative to it, so another machine's store reads them", (t) => {
-  const { store, run, record, reflect } = sandbox(t);
+  const { store, run, record, reflect } = sandbox(t, { underHome: true });
   const trail = join(scratchDir(t), "decisions.tsv");
   writeFileSync(trail, "row\n");
   const dir = reflect(A, "2026-10-20T09:00:00Z", { "backlog.md": "- a script for X\n" });
@@ -925,7 +927,8 @@ test("paths inside the retro folder are stored relative to it, so another machin
   mkdirSync(dirname(lookalike), { recursive: true });
   writeFileSync(lookalike, "n\n");
   run(["register", A, "--trail", lookalike], "2026-10-20T09:00:00Z");
-  assert.equal(record(A).trails.at(-1).source, lookalike, "a project's own retro folder is not the store's");
+  run(["register", A, "--trail", lookalike], "2026-10-20T09:00:00Z");
+  assert.deepEqual(record(A).trails.map((x) => x.source), [trail, lookalike], "a project's own retro folder is not the store's, so an unchanged trail keeps one copy");
 
   const other = sandbox(t);
   cpSync(join(store, "retro"), join(other.store, "retro"), { recursive: true });
@@ -939,7 +942,7 @@ test("paths inside the retro folder are stored relative to it, so another machin
 });
 
 test("records saved with absolute paths, here or on a Mac, read the same before and after migrate-paths, which runs once", (t) => {
-  const { store, run, home, inRetro, reflect, closeRound } = sandbox(t);
+  const { store, run, home, inRetro, reflect, closeRound } = sandbox(t, { underHome: true });
   const { pushed } = backedUp(t, store);
   const mac = "/Users/leemoore/.local/state/pstack/retro";
   const idOutsideThreadPattern = "limhealth-2026-10-16";
