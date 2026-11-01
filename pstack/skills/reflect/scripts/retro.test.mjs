@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,16 +12,29 @@ const A = "aaaaaaaa-0000-4000-8000-000000000001";
 const B = "bbbbbbbb-0000-4000-8000-000000000002";
 const C = "cccccccc-0000-4000-8000-000000000003";
 
+// The gitleaks retro.mjs would find on this machine. Tests that need real secret detection skip without one.
+const GITLEAKS = (() => {
+  const runs = (cmd) => spawnSync(cmd, ["version"]).status === 0;
+  const onPath = spawnSync("sh", ["-c", "command -v gitleaks"], { encoding: "utf-8" }).stdout.trim();
+  if (onPath && runs(onPath)) return onPath;
+  const installs = join(homedir(), "lim", "service", "gitleaks");
+  const versions = existsSync(installs) ? readdirSync(installs).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })) : [];
+  return versions.map((v) => join(installs, v, "bin", "gitleaks")).find(runs) ?? null;
+})();
+const needsGitleaks = { skip: !GITLEAKS && "needs gitleaks on PATH or under ~/lim/service/gitleaks" };
+
 function sandbox(t, { underHome = false } = {}) {
   const base = mkdtempSync(join(tmpdir(), "retro-store-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const store = underHome ? join(base, ".local", "state", "pstack") : base;
   mkdirSync(store, { recursive: true });
-  // A gitleaks that finds nothing, so the backup can push; the script's own patterns still scan.
   const scanner = scratchDir(t);
-  writeFileSync(join(scanner, "gitleaks"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  if (GITLEAKS) symlinkSync(GITLEAKS, join(scanner, "gitleaks"));
+  else writeFileSync(join(scanner, "gitleaks"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const archive = join(base, "archive");
+  mkdirSync(archive);
   const env = (nowIso, extra = {}) => {
-    const e = { ...process.env, PSTACK_STORE: store, PATH: `${scanner}:${process.env.PATH}`, ...(underHome && { HOME: base }), ...extra };
+    const e = { ...process.env, PSTACK_STORE: store, RETRO_ARCHIVE: archive, PATH: `${scanner}:${process.env.PATH}`, ...(underHome && { HOME: base }), ...extra };
     if (nowIso) e.RETRO_NOW = nowIso;
     else delete e.RETRO_NOW;
     return e;
@@ -46,7 +60,7 @@ function sandbox(t, { underHome = false } = {}) {
     for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(dir, f), "x\n");
     return run(["close", round], nowIso);
   };
-  return { store, run, home, inRetro, record, reflect, closeRound, env };
+  return { store, archive, run, home, inRetro, record, reflect, closeRound, env };
 }
 
 function scratchDir(t) {
@@ -607,14 +621,14 @@ test("a failed fetch or push never fails the command, and the next write pushes 
   assert.equal(backup().failure, null);
 });
 
-test("a possible secret blocks the push and heads REGISTRY.md until it is removed", (t) => {
+test("a possible secret blocks the push and heads REGISTRY.md until it is removed", needsGitleaks, (t) => {
   const { store, run, home } = sandbox(t);
   const { remote, git, pushed } = backedUp(t, store);
   run(["register", A]);
   writeFileSync(join(home(A), "notes.md"), `context\n${FAKE_KEY}`);
   const blocked = run(["register", A]);
   assert.equal(blocked.code, 0);
-  assert.match(blocked.err, new RegExp(`possible secret in ${join(home(A), "notes.md")} \\((private key|gitleaks private-key)\\)`));
+  assert.match(blocked.err, new RegExp(`possible secret in ${join(home(A), "notes.md")} \\(gitleaks (retro-)?private-key\\)`));
   assert.match(readFileSync(join(store, "retro", "REGISTRY.md"), "utf-8"), new RegExp(`^# Retro registry\n\n## Not backed up: possible secrets\n\n- \`${A}/notes.md\``));
   assert.deepEqual(pushed(), [`retro: register ${A}`]);
   assert.equal(git("diff", "--cached", "--name-only").stdout, "", "nothing is left staged");
@@ -634,7 +648,7 @@ test("a trail inside the retro folder is linked, since the backup already holds 
   assert.equal(record(A).trails[0].mode, "linked");
 });
 
-test("a secret in a file git calls binary still blocks the push", (t) => {
+test("a secret in a file git calls binary still blocks the push", needsGitleaks, (t) => {
   const { store, run, home } = sandbox(t);
   const { pushed } = backedUp(t, store);
   run(["register", A]);
@@ -669,7 +683,7 @@ test("a copied trail's own ignore rules do not keep its files out of the backup"
   assert.ok(!pushedFiles().includes(`${path}/run.tmp-1`), "the retro folder's own rules still apply");
 });
 
-test("a file written during the scan or before the push is never pushed unscanned", (t) => {
+test("a file written during the scan or before the push is never pushed unscanned", needsGitleaks, (t) => {
   const { store, run, home } = sandbox(t);
   const { remote, git, pushed } = backedUp(t, store);
   run(["register", A]);
@@ -677,7 +691,7 @@ test("a file written during the scan or before the push is never pushed unscanne
   const payload = join(bin, "payload");
   writeFileSync(payload, `reviewer output\x00\n${FAKE_KEY}`);
   const writeOnce = (target) => `[ -e "$0.done" ] || { cp ${payload} ${target}; touch "$0.done"; }\n`;
-  writeFileSync(join(bin, "gitleaks"), `#!/bin/sh\n${writeOnce(join(home(A), "reviewer-output.md"))}exit 0\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "gitleaks"), `#!/bin/sh\n${writeOnce(join(home(A), "reviewer-output.md"))}exec ${GITLEAKS} "$@"\n`, { mode: 0o755 });
   writeFileSync(join(store, "retro", ".git", "hooks", "pre-push"), `#!/bin/sh\n${writeOnce(join(home(A), "capture.log"))}`, { mode: 0o755 });
   const leaked = () => spawnSync("git", ["--git-dir", remote, "log", "-p", "--text", "main"], { encoding: "utf-8" }).stdout.includes("BEGIN OPENSSH");
   const withWriter = { PATH: `${bin}:${process.env.PATH}` };
@@ -730,9 +744,10 @@ test("unpushed commits whose only overlap with the other machine is REGISTRY.md 
   two.run(["register", B, "--project", "offline"]);
   assert.equal(one.run(["register", C]).err, "");
   two.git("remote", "set-url", "origin", remote);
-  const synced = two.run(["register", B, "--title", "back online"]);
+  const synced = two.run(["register", B, "--title", "back online"], "2026-10-21T09:00:00Z");
   assert.equal(synced.err, "");
-  assert.equal(pushed().length, 5, "all three of the second machine's commits are pushed");
+  assert.equal(pushed().length, 3, "the second machine's three writes are pushed as one commit");
+  assert.match(remoteGit("log", "-1", "--format=%b", "main").stdout, new RegExp(`^Also holds: retro: register ${B}\n`));
   const registry = remoteGit("show", "main:REGISTRY.md").stdout;
   assert.doesNotMatch(registry, /^(<<<<<<<|=======|>>>>>>>)/m);
   for (const label of ["[aaaaaaaa](", "[back online](", "[cccccccc]("]) assert.ok(registry.includes(label), `the pushed REGISTRY.md lists ${label}`);
@@ -749,10 +764,11 @@ test("a file both machines changed stops the sync, keeps this machine's work and
   const notes = join(two.home(A), "notes.md");
   assert.equal(one.run(["register", C]).err, "");
   writeFileSync(join(one.home(A), "notes.md"), "one\n");
-  assert.equal(one.run(["register", A]).err, "");
+  const sameSecond = "2026-10-21T09:00:00Z";
+  assert.equal(one.run(["register", A], sameSecond).err, "");
 
   writeFileSync(notes, "two\n");
-  const stopped = two.run(["register", A]);
+  const stopped = two.run(["register", A], sameSecond);
   assert.equal(stopped.code, 0);
   assert.match(stopped.err, new RegExp(`retro: backup sync failed \\(${notes} changed both here and on another machine\\. .*ask the operator to settle each file.*the next retro command that writes tries again`));
   assert.doesNotMatch(stopped.err, /REGISTRY\.md/, "REGISTRY.md is never the operator's to settle");
@@ -798,7 +814,7 @@ test("reminder.json changed on both machines settles to the later ask and the la
   assert.equal(JSON.parse(readFileSync(join(two.store, "retro", ".git", "retro-backup.json"), "utf-8")).failure, null);
 });
 
-test("after a sync, the secret scan covers exactly the rebased commits the push sends", (t) => {
+test("after a sync, the secret scan covers exactly the rebased commits the push sends", needsGitleaks, (t) => {
   const one = sandbox(t);
   const { remote, remoteGit, pushed } = backedUp(t, one.store);
   one.run(["register", A]);
@@ -806,7 +822,7 @@ test("after a sync, the secret scan covers exactly the rebased commits the push 
   assert.equal(two.run(["register", B]).err, "");
   const bin = scratchDir(t);
   const ranges = join(bin, "ranges");
-  writeFileSync(join(bin, "gitleaks"), `#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--log-opts" ]; do shift; done\necho "$2" >> ${ranges}\nexit 0\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "gitleaks"), `#!/bin/sh\nfor a; do [ "$prev" = "--log-opts" ] && echo "$a" >> ${ranges}; prev=$a; done\nexec ${GITLEAKS} "$@"\n`, { mode: 0o755 });
   const recording = { PATH: `${bin}:${process.env.PATH}` };
   const leaked = () => remoteGit("log", "-p", "--text", "main").stdout.includes("BEGIN OPENSSH");
 
@@ -817,14 +833,14 @@ test("after a sync, the secret scan covers exactly the rebased commits the push 
   assert.equal(pushed()[0], `retro: register ${C}`);
   assert.ok(!leaked());
   const blockedRange = readFileSync(ranges, "utf-8").trim().split("\n").at(-1);
-  assert.equal(blockedRange, `${two.git("rev-parse", "HEAD").stdout.trim()} --not --remotes=origin`, "the scan read the commit as rebased");
+  assert.equal(blockedRange, `--text ${two.git("rev-parse", "HEAD").stdout.trim()} --not --remotes=origin`, "the scan read the commit as rebased");
   assert.equal(two.git("merge-base", "--is-ancestor", "@{u}", "HEAD").status, 0);
 
   writeFileSync(join(two.home(B), "notes.md"), "context\n");
   assert.equal(one.run(["register", A, "--title", "meanwhile"]).err, "");
   assert.equal(two.run(["register", B, "--title", "clean"], undefined, recording).err, "");
   const sent = remoteGit("rev-parse", "main").stdout.trim();
-  assert.equal(readFileSync(ranges, "utf-8").trim().split("\n").at(-1), `${sent} --not --remotes=origin`, "the scan read the very commit that was pushed");
+  assert.equal(readFileSync(ranges, "utf-8").trim().split("\n").at(-1), `--text ${sent} --not --remotes=origin`, "the scan read the very commit that was pushed");
   assert.deepEqual(pushed().slice(0, 3), [`retro: register ${B}`, `retro: register ${A}`, `retro: register ${C}`]);
   assert.ok(!leaked(), "the held-back commit never reaches the remote");
 });
@@ -1011,4 +1027,203 @@ test("records saved with absolute paths, here or on a Mac, read the same before 
   assert.match(again.out, /already stores paths/);
   assert.deepEqual(records.map((f) => readFileSync(f, "utf-8")), texts);
   assert.equal(pushed()[0], "retro: store paths relative to the retro folder in 4 records", "a second run commits nothing");
+});
+
+// A bundle the way retro-export-thread writes one: a MANIFEST.json naming the thread and the export time, and the transcripts.
+function exportBundle(dir, thread = A) {
+  mkdirSync(join(dir, "children"), { recursive: true });
+  writeFileSync(join(dir, "MANIFEST.json"), JSON.stringify({ thread, exportedAt: "2026-10-28T12:00:00Z" }));
+  writeFileSync(join(dir, "activity.jsonl"), `${JSON.stringify({ seq: 0, output: `transcript at ${dir}` })}\n`);
+  writeFileSync(join(dir, "children", "child.jsonl"), `${JSON.stringify({ seq: 0, output: "child" })}\n`);
+  return dir;
+}
+
+const everPushed = (remoteGit) => remoteGit("log", "--all", "--name-only", "--format=").stdout.split("\n").filter(Boolean);
+const heldAnExport = (remoteGit) => everPushed(remoteGit).some((f) => /(MANIFEST\.json|activity\.jsonl|child\.jsonl)$/.test(f));
+const randomKey = (prefix, alphabet, n) => prefix + Array.from(randomBytes(n), (b) => alphabet[b % alphabet.length]).join("");
+const LOWER_ALNUM = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+test("exports never reach a pushed commit, even one an earlier unpushed commit holds", (t) => {
+  const { store, run, inRetro, record } = sandbox(t);
+  const { git, remoteGit, pushed } = backedUp(t, store);
+  run(["register", A]);
+  run(["register", A, "--trail", exportBundle(join(scratchDir(t), "slice2"))]);
+  const homeCopy = inRetro(record(A).trails[0].path);
+  assert.ok(existsSync(join(homeCopy, "activity.jsonl")), "the thread home keeps its copy");
+  const old = exportBundle(inRetro("rounds/2026-10-30/inputs/other/t3-group"));
+  git("add", "-A", "--force");
+  git("commit", "-qm", "retro: open round 2026-10-30");
+  assert.equal(run(["register", B]).err, "");
+  assert.ok(!heldAnExport(remoteGit), "no pushed commit ever held an export");
+  assert.equal(pushed()[0], `retro: register ${B}`);
+  assert.match(remoteGit("log", "-1", "--format=%b", "main").stdout, /^Also holds: retro: open round 2026-10-30/);
+  assert.ok(existsSync(join(old, "activity.jsonl")) && existsSync(join(homeCopy, "activity.jsonl")), "the local copies stay");
+});
+
+test("an export an earlier push holds leaves HEAD in the next commit", (t) => {
+  const { store, run, inRetro } = sandbox(t);
+  const { git, pushedFiles } = backedUp(t, store);
+  run(["register", A]);
+  const old = exportBundle(inRetro("rounds/2026-10-29/inputs/other/t3-sync"));
+  git("add", "-A", "--force");
+  git("commit", "-qm", "retro: open round 2026-10-29");
+  git("push", "-q", "origin", "HEAD:main");
+  assert.ok(pushedFiles().includes("rounds/2026-10-29/inputs/other/t3-sync/activity.jsonl"));
+  assert.equal(run(["register", B]).err, "");
+  assert.ok(!pushedFiles().some((f) => f.startsWith("rounds/2026-10-29/inputs/other/t3-sync/")), "the pushed tree no longer holds it");
+  assert.equal(git("ls-files", "rounds/2026-10-29").stdout, "", "it is untracked");
+  assert.ok(existsSync(join(old, "activity.jsonl")), "the local copy stays");
+});
+
+test("open deletes archived rounds more than seven days old, and nothing else", (t) => {
+  const { archive, run, inRetro, reflect } = sandbox(t);
+  for (const name of ["2026-10-01", "2026-10-24", "2026-10-25", "2026-10-31-2", "notes"]) exportBundle(join(archive, name, "inputs", "other", "x"));
+  assert.equal(run(["open", "--threads", "", "--at", "2026-10-16", "--earlier", "old"]).code, 0);
+  writeFileSync(inRetro("rounds/2026-10-16/synthesis.md"), "s\n");
+  assert.equal(run(["close", "2026-10-16", "--at", "2026-10-16"]).code, 0);
+  reflect(A, "2026-11-01T09:00:00");
+  assert.equal(run(["open"], "2026-11-01T10:00:00").code, 0);
+  assert.deepEqual(readdirSync(archive).sort(), ["2026-10-25", "2026-10-31-2", "notes"]);
+  assert.ok(existsSync(inRetro("rounds/2026-10-16/synthesis.md")), "results in the retro folder stay");
+
+  const other = sandbox(t);
+  other.reflect(A);
+  rmSync(other.archive, { recursive: true });
+  const r = other.run(["open"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /archive is missing, so no archived exports were pruned/);
+});
+
+// A round with one exported trail in a thread's home and one exported --input, ready to close.
+function roundWithExports(t, box) {
+  const { run, home, inRetro, record, reflect } = box;
+  reflect(A, "2026-10-28T09:00:00");
+  run(["register", A, "--trail", exportBundle(join(scratchDir(t), "slice2"))], "2026-10-28T09:00:00");
+  const homeCopy = inRetro(record(A).trails[0].path);
+  const opened = run(["open", "--input", exportBundle(join(scratchDir(t), "exercise-vitals"), B), "--at", "2026-10-29"], "2026-10-29T09:00:00");
+  assert.equal(opened.code, 0, opened.err);
+  const round = inRetro("rounds/2026-10-29");
+  for (const f of ["synthesis.md", "decisions.md", "merge-gate.md"]) writeFileSync(join(round, f), "x\n");
+  const trail = join("inputs", A, relative(home(A), homeCopy));
+  const input = join("inputs", "other", "exercise-vitals");
+  return { round, homeCopy, trail, input, roundJson: () => JSON.parse(readFileSync(join(round, "round.json"), "utf-8")) };
+}
+
+test("close copies each export to the archive, verifies it and deletes the local copies; without the archive it changes nothing", (t) => {
+  const box = sandbox(t);
+  const { remoteGit } = backedUp(t, box.store);
+  const { round, homeCopy, trail, input, roundJson } = roundWithExports(t, box);
+  const text = (dir) => readFileSync(join(dir, "activity.jsonl"), "utf-8");
+  const original = { trail: text(join(round, trail)), input: text(join(round, input)) };
+  const dest = join(box.archive, "2026-10-29");
+  const untouched = (what) => {
+    assert.equal(roundJson().closedAt, null, what);
+    for (const dir of [join(round, trail), join(round, input), homeCopy]) assert.ok(existsSync(join(dir, "activity.jsonl")), `${what}: ${dir} stays`);
+  };
+
+  const missing = box.run(["close", "2026-10-29"], undefined, { RETRO_ARCHIVE: join(box.archive, "absent") });
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /absent is missing/);
+  untouched("no archive");
+
+  mkdirSync(dest);
+  chmodSync(dest, 0o555);
+  const unwritable = box.run(["close", "2026-10-29"]);
+  chmodSync(dest, 0o755);
+  assert.equal(unwritable.code, 1);
+  assert.match(unwritable.err, /cannot copy .*nothing was deleted/);
+  untouched("a copy that failed");
+
+  const closed = box.run(["close", "2026-10-29"]);
+  assert.equal(closed.code, 0, closed.err);
+  assert.equal(text(join(dest, trail)), original.trail);
+  assert.equal(text(join(dest, input)), original.input);
+  assert.ok(existsSync(join(dest, input, "children", "child.jsonl")));
+  for (const dir of [join(round, trail), join(round, input), homeCopy]) assert.ok(!existsSync(dir), `${dir} is deleted`);
+  assert.ok(existsSync(join(round, "synthesis.md")) && existsSync(join(round, "inputs", A, "thread.json")), "results stay");
+  assert.equal(roundJson().archive, dest);
+  assert.equal(box.record(A).trails[0].archived, join(dest, trail));
+  assert.doesNotMatch(box.run(["status"]).out, /## Problems/);
+  assert.ok(!heldAnExport(remoteGit));
+});
+
+test("close after a run that stopped part way reuses verified copies, replaces a stale one, and converges", (t) => {
+  const box = sandbox(t);
+  const { round, homeCopy, trail, input, roundJson } = roundWithExports(t, box);
+  const dest = join(box.archive, "2026-10-29");
+  cpSync(join(round, input), join(dest, input), { recursive: true });
+  rmSync(join(round, input), { recursive: true });
+  cpSync(join(round, trail), join(dest, trail), { recursive: true });
+  writeFileSync(join(dest, trail, "activity.jsonl"), "half a copy");
+  const fresh = readFileSync(join(round, trail, "activity.jsonl"), "utf-8");
+
+  const closed = box.run(["close", "2026-10-29"]);
+  assert.equal(closed.code, 0, closed.err);
+  assert.equal(readFileSync(join(dest, trail, "activity.jsonl"), "utf-8"), fresh, "the stale copy is replaced");
+  assert.ok(existsSync(join(dest, input, "MANIFEST.json")), "the verified copy is kept");
+  assert.ok(!existsSync(join(round, trail)) && !existsSync(homeCopy));
+  assert.ok(roundJson().closedAt);
+
+  const listing = () => readdirSync(dest, { recursive: true }).sort();
+  const before = listing();
+  const again = box.run(["archive", "2026-10-29"]);
+  assert.equal(again.code, 0, again.err);
+  assert.deepEqual(listing(), before);
+  assert.doesNotMatch(box.run(["status"]).out, /## Problems/);
+});
+
+test("archive moves the exports of a round that closed before archiving existed, and refuses an open round", (t) => {
+  const box = sandbox(t);
+  const { round, trail, input, roundJson } = roundWithExports(t, box);
+  assert.match(box.run(["archive", "2026-10-29"]).err, /round 2026-10-29 is open; close archives its exports/);
+  writeFileSync(join(round, "round.json"), JSON.stringify({ ...roundJson(), closedAt: "2026-10-29T12:00:00-04:00" }));
+  const moved = box.run(["archive", "2026-10-29"]);
+  assert.equal(moved.code, 0, moved.err);
+  for (const dir of [trail, input]) {
+    assert.ok(existsSync(join(box.archive, "2026-10-29", dir, "activity.jsonl")));
+    assert.ok(!existsSync(join(round, dir)));
+  }
+  assert.equal(roundJson().archive, join(box.archive, "2026-10-29"));
+});
+
+test("the scan catches Cerebras and xAI proxy keys, and a key only an older unpushed commit held", needsGitleaks, (t) => {
+  const { store, run, home } = sandbox(t);
+  const { pushed } = backedUp(t, store);
+  run(["register", A]);
+  const csk = randomKey("csk-", LOWER_ALNUM, 48);
+  const cpa = randomKey("cpa-grok-", `${LOWER_ALNUM}ABCDEFGHIJKLMNOPQRSTUVWXYZ_-`, 64);
+  writeFileSync(join(home(A), "activity.jsonl"), `${JSON.stringify({ output: `$ env\nCEREBRAS=${csk}\n${cpa}\n` })}\n`);
+  const blocked = run(["register", A]);
+  assert.match(blocked.err, /activity\.jsonl \(gitleaks retro-cerebras-key\)/);
+  assert.match(blocked.err, /activity\.jsonl \(gitleaks retro-xai-proxy-key\)/);
+  assert.deepEqual(pushed(), [`retro: register ${A}`]);
+
+  const fresh = sandbox(t);
+  const backup = backedUp(t, fresh.store);
+  const capture = join(fresh.store, "retro", "capture.log");
+  writeFileSync(capture, `${randomKey("csk-", LOWER_ALNUM, 48)}\n`);
+  backup.git("add", "-A");
+  backup.git("commit", "-qm", "with a key");
+  rmSync(capture);
+  backup.git("commit", "-qam", "key removed");
+  assert.match(fresh.run(["register", A]).err, /possible secret in .*capture\.log \(gitleaks retro-cerebras-key\)/);
+  assert.deepEqual(backup.pushed(), []);
+});
+
+test("a scan that neither passes cleanly nor reports findings blocks the push", (t) => {
+  const broken = [
+    ["exits 0 but logs that git failed", `echo "ERR [git] fatal: bad revision" >&2; exit 0`],
+    ["says it found leaks but wrote no report", "exit 3"],
+    ["crashes", "exit 2"],
+  ];
+  for (const [what, body] of broken) {
+    const { store, run } = sandbox(t);
+    const { pushed } = backedUp(t, store);
+    const scanner = join(scratchDir(t), "gitleaks");
+    writeFileSync(scanner, `#!/bin/sh\n[ "$1" = version ] && exit 0\n${body}\n`, { mode: 0o755 });
+    const r = run(["register", A], undefined, { GITLEAKS_PATH: scanner });
+    assert.equal(r.code, 0, what);
+    assert.match(r.err, /possible secret in .* \(gitleaks did not finish: /, what);
+    assert.deepEqual(pushed(), [], what);
+  }
 });
