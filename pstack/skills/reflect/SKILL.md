@@ -41,8 +41,4 @@ In a few lines, say what the reflect found and where it is saved (`<reflect fold
 
 ## Retro rounds
 
-A retro round reviews several threads' reflects together. `retro.mjs status` writes `REGISTRY.md` in the store's `retro/` folder and says whether a round is due. `retro.mjs open` copies the homes of the threads with waiting reflects into a new round folder, whose `README.md` lists every input. Read them, then write `synthesis.md`, the user's decisions in their own words as `decisions.md`, and `merge-gate.md` on how the merge gate script has done since the last round. The round proposes the changes, and the user approves each one. `retro.mjs close <round>` refuses until all three files exist.
-
-Apply each approved edit where the skill's source lives, never only in the installed copy, which a reinstall overwrites. A pstack skill changes through a PR to `liminal-ai/pstack-lim` against `lim`, then a reinstall per that repo's `FORK.md`. pstack-lim does not own a vendor skill or the user's own draft that exists only in `~/.agents/skills`. Name the owner to the user and leave that edit to them.
-
-Before you close the round, file the follow-ups the user kept in Linear as a few tickets grouped by body of work, never one per item, each in the project that the owning repo's AGENTS.md names (Retro rounds for process items). Read the project's open tickets first and add to a matching grouped ticket. Add each issue id to `decisions.md`.
+A retro round reviews several threads' reflects together. Run it with the `retro` skill at `~/lim-v2/skills/retro/`. Reflect keeps the round's records: `retro.mjs status` writes `REGISTRY.md` in the store's `retro/` folder and says whether a round is due, `retro.mjs open` copies the homes of the threads with waiting reflects into a new round folder, and `retro.mjs close <round>` refuses until the round holds `synthesis.md`, `decisions.md` and `merge-gate.md`.
