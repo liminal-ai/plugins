@@ -13,6 +13,7 @@ const USAGE = `usage: retro.mjs <command>
   status
   open [--threads ID,ID] [--input PATH]... [--at YYYY-MM-DD] [--earlier REASON]
   close <round> [--at YYYY-MM-DD]
+  archive <round>
   backlog [--all]
   remind [--answered]
   migrate-paths`;
@@ -32,6 +33,9 @@ const STALE_ROUND_DAYS = 7;
 const LOCK_WAIT_MS = Number(process.env.RETRO_LOCK_WAIT_MS ?? 30000);
 const ROUND_OUTPUTS = ["synthesis.md", "decisions.md", "merge-gate.md"];
 const SELF = "node ~/.agents/skills/reflect/scripts/retro.mjs";
+const ROUND_ID = /^\d{4}-\d{2}-\d{2}(-\d+)?$/;
+const ARCHIVE = resolve(process.env.RETRO_ARCHIVE ?? "/archive/retro");
+const ARCHIVE_KEEP_DAYS = 7;
 
 class Refusal extends Error {}
 const refuse = (msg) => {
@@ -58,17 +62,8 @@ const BACKUP_BRANCH = "main";
 // The same patterns as the retro folder's .gitignore. Staging forces past every other ignore rule, because a copied trail can carry its own.
 const NEVER_BACKED_UP = [".lock", "*.tmp-*"];
 
-// Checked on every commit, with gitleaks too. Each pattern is specific enough not to match ordinary prose.
-const SECRET_PATTERNS = [
-  ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
-  ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
-  ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,})/],
-  ["Anthropic or OpenAI key", /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{32,}/],
-  ["Slack token", /\bxox[abprs]-[0-9A-Za-z-]{10,}/],
-  ["Google API key", /\bAIza[0-9A-Za-z_-]{35}/],
-  ["Stripe live key", /\b[rs]k_live_[0-9A-Za-z]{20,}/],
-  ["Linear API key", /\blin_api_[0-9A-Za-z]{40}/],
-];
+// gitleaks' default rules plus the key types retro transcripts have held.
+const GITLEAKS_CONFIG = join(dirname(fileURLToPath(import.meta.url)), "gitleaks.toml");
 
 function now() {
   return process.env.RETRO_NOW ? new Date(process.env.RETRO_NOW) : new Date();
@@ -250,6 +245,25 @@ function trailMode(target) {
   return pushed ? { mode: "linked", commit } : { mode: "copied" };
 }
 
+// An export is a folder retro-export-thread wrote: its MANIFEST.json names the thread and the export time.
+// Exports are full transcripts, so they are never backed up, and close moves them to the archive drive.
+function isExport(dir) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dir, "MANIFEST.json"), "utf-8"));
+    return Boolean(manifest.thread && manifest.exportedAt);
+  } catch {
+    return false;
+  }
+}
+
+function findExports(dir) {
+  if (!existsSync(dir)) return [];
+  if (isExport(dir)) return [dir];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && e.name !== ".git")
+    .flatMap((e) => findExports(join(dir, e.name)));
+}
+
 function digest(path) {
   const sha = (data) => createHash("sha256").update(data).digest("hex");
   const tree = (p) => (statSync(p).isDirectory() ? Object.fromEntries(readdirSync(p).sort().map((n) => [n, tree(join(p, n))])) : sha(readFileSync(p)));
@@ -378,13 +392,13 @@ function modelsCell(t) {
 }
 
 function trailsCell(t) {
-  return currentTrails(t).map((x) => `${x.mode}: \`${x.path}\``).join("<br>") || "none";
+  return currentTrails(t).map((x) => (x.archived ? `archived: \`${x.archived}\`` : `${x.mode}: \`${x.path}\``)).join("<br>") || "none";
 }
 
 function findProblems({ threads, rounds, problems }) {
   const out = [...problems];
   for (const t of threads.values()) {
-    for (const x of currentTrails(t)) if (!existsSync(x.path)) out.push(`${t.thread}: trail missing at ${x.path}`);
+    for (const x of currentTrails(t)) if (!x.archived && !existsSync(x.path)) out.push(`${t.thread}: trail missing at ${x.path}`);
     for (const c of t.reflects) if (!isFile(join(c.dir, "synthesis.md"))) out.push(`${t.thread}: reflect ${c.dir} has no synthesis.md`);
   }
   for (const r of rounds) {
@@ -490,40 +504,31 @@ function findGitleaks() {
   return installed ? { cmd: installed } : { error: `gitleaks not found in $GITLEAKS_PATH, on PATH, or at ${installs}/*/bin/gitleaks` };
 }
 
-// Fails closed: a gitleaks run that neither passes nor reports leaks counts as a hit.
-function gitleaksHits(gitleaks, range) {
-  const leaks = spawnSync(
+// Fails closed: anything but a clean pass or a report of findings counts as a hit.
+// A clean pass also needs an empty stderr, because gitleaks exits 0 with an empty report when git log itself fails.
+// --text makes git show files it would call binary, such as a log with a NUL byte, which gitleaks otherwise skips.
+function scanCommits(gitleaks, range) {
+  rmSync(GITLEAKS_REPORT, { force: true });
+  const r = spawnSync(
     gitleaks,
-    ["git", "--log-opts", range.join(" "), "--redact", "--no-banner", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
+    ["git", "--config", GITLEAKS_CONFIG, "--log-opts", ["--text", ...range].join(" "), "--redact", "--no-banner", "--no-color", "--log-level", "error", "--exit-code", "3", "--report-format", "json", "--report-path", GITLEAKS_REPORT, RETRO],
     { encoding: "utf-8" },
   );
-  if (leaks.status === 0) return [];
+  const stderr = (r.stderr ?? "").trim();
+  if (r.status === 0 && !stderr) return [];
   try {
-    if (leaks.status === 3) return JSON.parse(readFileSync(GITLEAKS_REPORT, "utf-8")).map((f) => ({ file: f.File, pattern: `gitleaks ${f.RuleID}` }));
+    const found = r.status === 3 ? JSON.parse(readFileSync(GITLEAKS_REPORT, "utf-8")) : [];
+    if (found.length) return found.map((f) => ({ file: f.File, pattern: `gitleaks ${f.RuleID}` }));
   } catch {}
-  return [{ file: ".", pattern: `gitleaks did not finish: ${(leaks.stderr || leaks.error?.message || `exit ${leaks.status}`).trim().split("\n").at(-1)}` }];
+  return [{ file: ".", pattern: `gitleaks did not finish: ${(stderr || r.error?.message || `exit ${r.status}`).split("\n").at(-1)}` }];
 }
 
-// Reads the added lines of every commit in range, the content a push of that range sends.
-// --text shows files git would call binary, such as a log with a NUL byte; --no-renames shows a moved file in full.
-function scanCommits(gitleaks, range) {
-  const hits = new Map(gitleaksHits(gitleaks, range).map((x) => [`${x.file}\0${x.pattern}`, x]));
-  let file = null;
-  let header = false;
-  const log = git("-c", "core.quotePath=false", "log", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "--format=", ...range);
-  if (log.status !== 0) return [{ file: ".", pattern: `git log did not finish: ${log.stderr.trim().split("\n").at(-1)}` }];
-  for (const line of log.stdout.split("\n")) {
-    if (line.startsWith("diff --git ")) header = true;
-    else if (header && line.startsWith("+++ ")) file = line === "+++ /dev/null" ? null : line.slice(6);
-    else if (line.startsWith("@@")) header = false;
-    else if (!header && file && line.startsWith("+")) {
-      for (const [pattern, re] of SECRET_PATTERNS) if (re.test(line)) hits.set(`${file}\0${pattern}`, { file, pattern });
-    }
-  }
-  return [...hits.values()];
+// Exports are left out, and one an earlier commit tracked is untracked here, so the next commit drops it.
+function stageAll() {
+  const exports = findExports(RETRO).map((p) => relative(RETRO, p));
+  if (exports.length) git("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...exports.map((p) => `:(literal)${p}`));
+  return git("add", "-A", "--force", "--", ".", ...NEVER_BACKED_UP.map((p) => `:(exclude,glob)**/${p}`), ...exports.map((p) => `:(exclude,literal)${p}`));
 }
-
-const stageAll = () => git("add", "-A", "--force", "--", ".", ...NEVER_BACKED_UP.map((p) => `:(exclude,glob)**/${p}`));
 
 function backupFailed(state, step, r) {
   const error = (r.stderr || r.error?.message || `exit ${r.status}`).trim().split("\n").at(-1);
@@ -592,12 +597,9 @@ function save(message) {
   stageAll();
   const upstream = `refs/remotes/origin/${BACKUP_BRANCH}`;
   const base = git("merge-base", "HEAD", upstream).stdout.trim();
-  const heldBackCommitsWouldRecur = prior.secrets.length || prior.failure?.step === "sync";
-  let body = [];
-  if (heldBackCommitsWouldRecur && base) {
-    body = git("log", "--format=%s", "HEAD", "--not", "--remotes=origin").stdout.trim().split("\n").filter(Boolean);
-    git("reset", "-q", "--soft", base);
-  }
+  // Every unpushed commit folds into the new one, so a file a held-back or older commit holds, such as an export, is never pushed.
+  const body = base ? git("log", "--format=%s", "HEAD", "--not", "--remotes=origin").stdout.trim().split("\n").filter(Boolean) : [];
+  if (body.length) git("reset", "-q", "--soft", base);
   if (git("diff", "--cached", "--quiet").status !== 0) {
     const commit = git("commit", "-q", "--no-verify", "-m", `retro: ${message}`, ...(body.length ? ["-m", `Also holds: ${body.join("; ")}`] : []));
     if (commit.status !== 0) return backupFailed(prior, "commit", commit);
@@ -676,7 +678,17 @@ function gatherBacklog(entries, threads) {
   return parts.length ? `# Backlog\n\n${parts.join("\n")}` : "# Backlog\n\nNo reflect in this set has a backlog.md.\n";
 }
 
+// Each round's exports stay on the archive drive for a week after the round. Results in the retro folder are never deleted.
+function pruneArchive(at) {
+  if (!existsSync(ARCHIVE)) return console.error(`warning: ${ARCHIVE} is missing, so no archived exports were pruned`);
+  const today = new Date(`${day(at)}T00:00:00Z`);
+  for (const name of readdirSync(ARCHIVE).filter((n) => ROUND_ID.test(n) && statSync(join(ARCHIVE, n)).isDirectory())) {
+    if ((today - new Date(`${name.slice(0, 10)}T00:00:00Z`)) / DAY > ARCHIVE_KEEP_DAYS) rmSync(join(ARCHIVE, name), { recursive: true, force: true });
+  }
+}
+
 function cmdOpen(args) {
+  pruneArchive(now());
   const state = load();
   const open = state.rounds.find((r) => !r.closedAt);
   if (open) refuse(`round ${open.round} is open; close it first`);
@@ -722,23 +734,99 @@ function cmdOpen(args) {
   console.log(dir);
 }
 
-function cmdClose(args) {
-  const id = args._[0];
+function roundRecord(id) {
   const file = join(ROUNDS, id ?? "", "round.json");
-  if (!/^\d{4}-\d{2}-\d{2}(-\d+)?$/.test(id ?? "") || !existsSync(file)) refuse(`no round ${id ?? "given"}; see ${SELF} status`);
+  if (!ROUND_ID.test(id ?? "") || !existsSync(file)) refuse(`no round ${id ?? "given"}; see ${SELF} status`);
   const problems = [];
   const round = readRecord(file, problems);
   if (!round) refuse(problems.join("\n"));
+  return { file, round };
+}
+
+function copyVerified(src, dest, sum) {
+  const staged = `${dest}.tmp-${process.pid}`;
+  try {
+    mkdirSync(dirname(dest), { recursive: true });
+    rmSync(staged, { recursive: true, force: true });
+    copyResolved(src, staged);
+  } catch (err) {
+    rmSync(staged, { recursive: true, force: true });
+    refuse(`cannot copy ${src} to ${dest}: ${err.message}; nothing was deleted`);
+  }
+  if (digest(staged) !== sum) {
+    rmSync(staged, { recursive: true, force: true });
+    refuse(`the copy of ${src} at ${dest} does not match it; nothing was deleted`);
+  }
+  rmSync(dest, { recursive: true, force: true });
+  renameSync(staged, dest);
+}
+
+// One rename takes an export out of the folder, so a crash mid-delete never leaves a partial export that would be staged or archived.
+// The trash sits inside .git, which nothing stages or scans, and each removal empties it.
+function removeExport(dir) {
+  if (!existsSync(GIT_DIR)) return rmSync(dir, { recursive: true, force: true });
+  const trash = join(GIT_DIR, "retro-trash");
+  mkdirSync(trash, { recursive: true });
+  renameSync(dir, unique(join(trash, basename(dir))));
+  rmSync(trash, { recursive: true, force: true });
+}
+
+// Every export is copied and verified before any local copy is deleted, and a rerun after a crash at any point converges:
+// a verified archive copy is reused, and an export already gone from the round folder was verified before it went.
+function archiveRound(round) {
+  if (!existsSync(ARCHIVE)) refuse(`${ARCHIVE} is missing, so the round's exports have nowhere to go; mount the archive drive or set RETRO_ARCHIVE`);
+  const roundDir = join(ROUNDS, round.round);
+  const dest = join(ARCHIVE, round.round);
+  const exports = findExports(roundDir);
+  for (const dir of exports) {
+    const target = join(dest, relative(roundDir, dir));
+    const sum = digest(dir);
+    if (!(existsSync(target) && digest(target) === sum)) copyVerified(dir, target, sum);
+  }
+  for (const id of round.threads) {
+    const home = join(RETRO, id);
+    const file = join(home, "thread.json");
+    const rec = existsSync(file) && readRecord(file, []);
+    if (!rec) continue;
+    const archived = findExports(home)
+      .map((dir) => ({ dir, target: join(dest, "inputs", id, relative(home, dir)) }))
+      .filter(({ dir, target }) => existsSync(target) && digest(target) === digest(dir));
+    if (!archived.length) continue;
+    for (const t of rec.trails) {
+      const match = archived.find(({ dir }) => t.path === dir);
+      if (match) t.archived = match.target;
+    }
+    writeRecord(file, rec);
+    for (const { dir } of archived) removeExport(dir);
+  }
+  for (const dir of exports) removeExport(dir);
+  round.archive = dest;
+}
+
+function cmdClose(args) {
+  const id = args._[0];
+  const { file, round } = roundRecord(id);
   if (round.closedAt) refuse(`round ${id} closed at ${round.closedAt}`);
   const required = round.earlier ? ["synthesis.md"] : ROUND_OUTPUTS;
   const missing = required.filter((f) => !isFile(join(ROUNDS, id, f)));
   if (missing.length) refuse(`round ${id} is missing ${missing.join(", ")} in ${join(ROUNDS, id)}`);
   const closedAt = atOrNow(args.at);
   if (closedAt < new Date(round.openedAt)) refuse(`round ${id} opened at ${round.openedAt}; it cannot close before that`);
+  archiveRound(round);
   round.closedAt = stamp(closedAt);
   writeRecord(file, round);
   save(`close round ${id}`);
-  console.log(`closed round ${id}`);
+  console.log(`closed round ${id}; its exports are in ${round.archive}`);
+}
+
+function cmdArchive(args) {
+  const id = args._[0];
+  const { file, round } = roundRecord(id);
+  if (!round.closedAt) refuse(`round ${id} is open; close archives its exports`);
+  archiveRound(round);
+  writeRecord(file, round);
+  save(`archive round ${id}`);
+  console.log(`round ${id}'s exports are in ${round.archive}`);
 }
 
 function cmdBacklog(args) {
@@ -806,7 +894,7 @@ function parse(argv) {
   return args;
 }
 
-const COMMANDS = { reflect: cmdReflect, register: cmdRegister, status: cmdStatus, open: cmdOpen, close: cmdClose, backlog: cmdBacklog, remind: cmdRemind, "migrate-paths": cmdMigratePaths };
+const COMMANDS = { reflect: cmdReflect, register: cmdRegister, status: cmdStatus, open: cmdOpen, close: cmdClose, archive: cmdArchive, backlog: cmdBacklog, remind: cmdRemind, "migrate-paths": cmdMigratePaths };
 
 try {
   const [command, ...rest] = process.argv.slice(2);

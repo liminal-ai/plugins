@@ -1,0 +1,67 @@
+# retro.mjs scans every commit it pushes with gitleaks' default rules plus these.
+# Each pattern is specific enough not to match ordinary prose.
+# In a transcript a key can follow a JSON \n escape, where \b does not match, so the rules also accept one there.
+title = "retro backup"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "retro-private-key"
+description = "Private key"
+regex = '''-----BEGIN [A-Z ]*PRIVATE KEY-----'''
+keywords = ["private key-----"]
+
+[[rules]]
+id = "retro-aws-access-key"
+description = "AWS access key"
+regex = '''(?:\\[nrt]|\b)(?:AKIA|ASIA)[0-9A-Z]{16}\b'''
+keywords = ["akia", "asia"]
+
+[[rules]]
+id = "retro-github-token"
+description = "GitHub token"
+regex = '''(?:\\[nrt]|\b)(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,})'''
+keywords = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]
+
+[[rules]]
+id = "retro-anthropic-openai-key"
+description = "Anthropic or OpenAI key"
+regex = '''(?:\\[nrt]|\b)sk-(?:ant-|proj-)?[A-Za-z0-9_-]{32,}'''
+keywords = ["sk-"]
+
+[[rules]]
+id = "retro-slack-token"
+description = "Slack token"
+regex = '''(?:\\[nrt]|\b)xox[abprs]-[0-9A-Za-z-]{10,}'''
+keywords = ["xox"]
+
+[[rules]]
+id = "retro-google-api-key"
+description = "Google API key"
+regex = '''(?:\\[nrt]|\b)AIza[0-9A-Za-z_-]{35}'''
+keywords = ["aiza"]
+
+[[rules]]
+id = "retro-stripe-live-key"
+description = "Stripe live key"
+regex = '''(?:\\[nrt]|\b)[rs]k_live_[0-9A-Za-z]{20,}'''
+keywords = ["k_live_"]
+
+[[rules]]
+id = "retro-linear-api-key"
+description = "Linear API key"
+regex = '''(?:\\[nrt]|\b)lin_api_[0-9A-Za-z]{40}'''
+keywords = ["lin_api_"]
+
+[[rules]]
+id = "retro-cerebras-key"
+description = "Cerebras API key"
+regex = '''csk-[a-z0-9]{40,}'''
+keywords = ["csk-"]
+
+[[rules]]
+id = "retro-xai-proxy-key"
+description = "xAI proxy key"
+regex = '''cpa-grok-[A-Za-z0-9_-]{20,}'''
+keywords = ["cpa-grok-"]
