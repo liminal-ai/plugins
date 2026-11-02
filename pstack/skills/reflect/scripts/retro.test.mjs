@@ -1078,12 +1078,13 @@ test("an export an earlier push holds leaves HEAD in the next commit", (t) => {
 test("open deletes archived rounds more than seven days old, and nothing else", (t) => {
   const { archive, run, inRetro, reflect } = sandbox(t);
   for (const name of ["2026-10-01", "2026-10-24", "2026-10-25", "2026-10-31-2", "notes"]) exportBundle(join(archive, name, "inputs", "other", "x"));
+  writeFileSync(join(archive, "2026-10-02"), "not a round folder\n");
   assert.equal(run(["open", "--threads", "", "--at", "2026-10-16", "--earlier", "old"], "2026-10-16T09:00:00").code, 0);
   writeFileSync(inRetro("rounds/2026-10-16/synthesis.md"), "s\n");
   assert.equal(run(["close", "2026-10-16", "--at", "2026-10-16"], "2026-10-16T10:00:00").code, 0);
   reflect(A, "2026-11-01T09:00:00");
   assert.equal(run(["open"], "2026-11-01T10:00:00").code, 0);
-  assert.deepEqual(readdirSync(archive).sort(), ["2026-10-25", "2026-10-31-2", "notes"]);
+  assert.deepEqual(readdirSync(archive).sort(), ["2026-10-02", "2026-10-25", "2026-10-31-2", "notes"]);
   assert.ok(existsSync(inRetro("rounds/2026-10-16/synthesis.md")), "results in the retro folder stay");
 
   const other = sandbox(t);
@@ -1134,8 +1135,12 @@ test("close copies each export to the archive, verifies it and deletes the local
   assert.match(unwritable.err, /cannot copy .*nothing was deleted/);
   untouched("a copy that failed");
 
+  const leftover = join(box.store, "retro", ".git", "retro-trash", "slice2");
+  mkdirSync(leftover, { recursive: true });
+  writeFileSync(join(leftover, "activity.jsonl"), "what a removal cut short leaves\n");
   const closed = box.run(["close", "2026-10-29"]);
   assert.equal(closed.code, 0, closed.err);
+  assert.ok(!existsSync(join(box.store, "retro", ".git", "retro-trash")), "removed exports leave nothing behind");
   assert.equal(text(join(dest, trail)), original.trail);
   assert.equal(text(join(dest, input)), original.input);
   assert.ok(existsSync(join(dest, input, "children", "child.jsonl")));

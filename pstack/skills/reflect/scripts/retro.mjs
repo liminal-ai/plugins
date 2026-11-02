@@ -682,7 +682,7 @@ function gatherBacklog(entries, threads) {
 function pruneArchive(at) {
   if (!existsSync(ARCHIVE)) return console.error(`warning: ${ARCHIVE} is missing, so no archived exports were pruned`);
   const today = new Date(`${day(at)}T00:00:00Z`);
-  for (const name of readdirSync(ARCHIVE).filter((n) => ROUND_ID.test(n))) {
+  for (const name of readdirSync(ARCHIVE).filter((n) => ROUND_ID.test(n) && statSync(join(ARCHIVE, n)).isDirectory())) {
     if ((today - new Date(`${name.slice(0, 10)}T00:00:00Z`)) / DAY > ARCHIVE_KEEP_DAYS) rmSync(join(ARCHIVE, name), { recursive: true, force: true });
   }
 }
@@ -761,6 +761,16 @@ function copyVerified(src, dest, sum) {
   renameSync(staged, dest);
 }
 
+// One rename takes an export out of the folder, so a crash mid-delete never leaves a partial export that would be staged or archived.
+// The trash sits inside .git, which nothing stages or scans, and each removal empties it.
+function removeExport(dir) {
+  if (!existsSync(GIT_DIR)) return rmSync(dir, { recursive: true, force: true });
+  const trash = join(GIT_DIR, "retro-trash");
+  mkdirSync(trash, { recursive: true });
+  renameSync(dir, unique(join(trash, basename(dir))));
+  rmSync(trash, { recursive: true, force: true });
+}
+
 // Every export is copied and verified before any local copy is deleted, and a rerun after a crash at any point converges:
 // a verified archive copy is reused, and an export already gone from the round folder was verified before it went.
 function archiveRound(round) {
@@ -787,9 +797,9 @@ function archiveRound(round) {
       if (match) t.archived = match.target;
     }
     writeRecord(file, rec);
-    for (const { dir } of archived) rmSync(dir, { recursive: true, force: true });
+    for (const { dir } of archived) removeExport(dir);
   }
-  for (const dir of exports) rmSync(dir, { recursive: true, force: true });
+  for (const dir of exports) removeExport(dir);
   round.archive = dest;
 }
 
